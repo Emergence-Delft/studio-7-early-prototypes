@@ -1,0 +1,535 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Arrow Swarm</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a framed box in the middle of an open page. The swarm lives in the box until the fury meter fills, then the frame opens and it spreads across the whole screen. */
+  :root {
+    --bg: #e8edf1;
+    --stage: #f4f7f9;
+    --line: #b7c4cf;
+    --ink: #14232f;
+    --muted: #4f626f;
+    --arrow: #1f4766;
+    --rage: #cf1b1b;
+    --accent: #d8432a;
+    --panel: #dde5eb;
+    --font-display: 'Bricolage Grotesque', system-ui, sans-serif;
+    --font-body: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c151d; --stage: #101c26; --line: #27394a; --ink: #e4edf3;
+      --muted: #8ea3b3; --arrow: #8dc0e6; --rage: #ff3d3d; --accent: #ff7b57; --panel: #15222d;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c151d; --stage: #101c26; --line: #27394a; --ink: #e4edf3;
+    --muted: #8ea3b3; --arrow: #8dc0e6; --rage: #ff3d3d; --accent: #ff7b57; --panel: #15222d;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 13px;
+    line-height: 1.45;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 14px;
+  }
+
+  .wrap { width: min(100%, 720px); margin-inline: auto; display: flex; flex-direction: column; gap: 12px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 20px; }
+  .title { min-width: 0; }
+  h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .hint { margin: 0; color: var(--muted); }
+  .hint b { color: var(--accent); font-weight: 500; }
+
+  .fury { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; min-width: 0; }
+  .fury-label { text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; color: var(--muted); }
+  .segs { display: flex; gap: 3px; }
+  .seg { width: 12px; height: 9px; border: 1px solid var(--line); border-radius: 1px; background: transparent; transition: background-color .2s, border-color .2s; }
+  .seg.on { background: var(--rage); border-color: var(--rage); }
+  .fury-text { font-variant-numeric: tabular-nums; min-width: 9ch; }
+
+  .stage {
+    position: relative;
+    height: clamp(260px, 50vh, 460px);
+    min-width: 0;
+    background: var(--stage);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    cursor: crosshair;
+    touch-action: none;
+    transition: border-color .4s;
+  }
+  .stage.open { border-style: dashed; border-color: var(--rage); }
+
+  /* Full-screen layer above the page so the swarm can fly over everything once it is out. Clicks pass through. */
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; z-index: 5; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px 18px;
+    align-items: end;
+  }
+  .ctl { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .ctl .row { display: flex; justify-content: space-between; gap: 8px; }
+  .ctl label { text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; color: var(--muted); }
+  .ctl output { font-variant-numeric: tabular-nums; font-weight: 500; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+  input[type="range"]:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  button {
+    font: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 11px;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--ink); color: var(--bg); }
+</style>
+
+<canvas id="cv" role="img" aria-label="A swarm of small V-shaped arrows flocking around the cursor"></canvas>
+
+<div class="wrap">
+  <header>
+    <div class="title">
+      <h1>Arrow Swarm</h1>
+      <p class="hint">Move the cursor to call them in. <b>Click</b> to scare them. Do it enough and they will leave.</p>
+    </div>
+    <div class="fury" role="status">
+      <span class="fury-label">Fury</span>
+      <span class="segs" id="segs" aria-hidden="true"></span>
+      <span class="fury-text" id="fury-text"></span>
+      <button type="button" id="fury-btn">Calm them down</button>
+    </div>
+  </header>
+
+  <div class="stage" id="stage"></div>
+
+  <section class="panel" id="panel" aria-label="Swarm rules"></section>
+</div>
+
+<script>
+(function () {
+  var stage = document.getElementById('stage');
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var panel = document.getElementById('panel');
+  var segsEl = document.getElementById('segs');
+  var furyText = document.getElementById('fury-text');
+  var furyBtn = document.getElementById('fury-btn');
+
+  var vw = 800, vh = 600, dpr = 1;
+  var box = { x0: 0, y0: 0, x1: 720, y1: 400 };
+  var colors = { arrow: '#1f4766', rage: '#cf1b1b', accent: '#d8432a' };
+  var rgb = { arrow: [31, 71, 102], rage: [207, 27, 27] };
+
+  /* The four rules, the cursor, and how many clicks it takes to break out. */
+  var P = { separation: 1.5, alignment: 1.0, cohesion: 1.0, border: 2.0, mouse: 0.7, count: 160, escapeAt: 8 };
+  var DEFAULTS = JSON.parse(JSON.stringify(P));
+  var controls = [
+    { key: 'separation', label: "Don't collide", min: 0, max: 3, step: 0.1 },
+    { key: 'alignment',  label: 'Match direction', min: 0, max: 3, step: 0.1 },
+    { key: 'cohesion',   label: "Don't stray", min: 0, max: 3, step: 0.1 },
+    { key: 'border',     label: 'Avoid the edge', min: 0, max: 4, step: 0.1 },
+    { key: 'mouse',      label: 'Follow cursor', min: 0, max: 2, step: 0.05 },
+    { key: 'count',      label: 'Arrows', min: 20, max: 400, step: 10, int: true },
+    { key: 'escapeAt',   label: 'Clicks to escape', min: 3, max: 15, step: 1, int: true }
+  ];
+
+  var boids = [];
+  var shocks = [];
+  var mouse = { x: 0, y: 0, seen: false, active: false };
+  var scaredAt = -1e9;
+  var size = 9;
+  var clicks = 0;
+  var escaped = false;
+  var anger = 0;
+  var breakout = { until: 0, x: 0, y: 0 };
+
+  /* Turn any CSS colour into [r,g,b] by letting the canvas normalise it. */
+  function parseColor(str, fallback) {
+    try {
+      ctx.fillStyle = '#000000';
+      ctx.fillStyle = str;
+      var v = ctx.fillStyle;
+      if (v.charAt(0) === '#' && v.length === 7) {
+        return [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)];
+      }
+      var m = v.match(/[\d.]+/g);
+      if (m && m.length >= 3) return [+m[0], +m[1], +m[2]];
+    } catch (e) {}
+    return fallback;
+  }
+
+  function readColors() {
+    var cs = getComputedStyle(document.documentElement);
+    colors.arrow = cs.getPropertyValue('--arrow').trim() || colors.arrow;
+    colors.rage = cs.getPropertyValue('--rage').trim() || colors.rage;
+    colors.accent = cs.getPropertyValue('--accent').trim() || colors.accent;
+    rgb.arrow = parseColor(colors.arrow, rgb.arrow);
+    rgb.rage = parseColor(colors.rage, rgb.rage);
+  }
+
+  function measure() {
+    var r = stage.getBoundingClientRect();
+    box.x0 = r.left; box.y0 = r.top; box.x1 = r.right; box.y1 = r.bottom;
+  }
+
+  function resize() {
+    var de = document.documentElement;
+    vw = Math.max(100, de.clientWidth); vh = Math.max(100, de.clientHeight);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(vw * dpr); cv.height = Math.round(vh * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    measure();
+    size = Math.max(7, Math.min(11, Math.min(box.x1 - box.x0, box.y1 - box.y0) / 50));
+  }
+
+  function spawn() {
+    var w = box.x1 - box.x0, h = box.y1 - box.y0;
+    var a = Math.random() * Math.PI * 2, s = 1.6 + Math.random() * 1.2;
+    return {
+      x: box.x0 + w * (0.2 + Math.random() * 0.6), y: box.y0 + h * (0.2 + Math.random() * 0.6),
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s, ax: 0, ay: 0, scare: 0
+    };
+  }
+
+  function setCount(n) {
+    while (boids.length < n) boids.push(spawn());
+    if (boids.length > n) boids.length = n;
+  }
+
+  function scareAt(x, y, now) {
+    var radius = Math.max(180, Math.min(380, Math.min(box.x1 - box.x0, box.y1 - box.y0) * 0.55));
+    scaredAt = now;
+    shocks.push({ x: x, y: y, age: 0, radius: radius });
+    for (var i = 0; i < boids.length; i++) {
+      var b = boids[i];
+      var dx = b.x - x, dy = b.y - y, d = Math.sqrt(dx * dx + dy * dy);
+      if (d > radius) continue;
+      if (d < 0.5) { var a = Math.random() * 6.283; dx = Math.cos(a); dy = Math.sin(a); d = 1; }
+      var f = 1 - d / radius;
+      b.vx += (dx / d) * f * 8;
+      b.vy += (dy / d) * f * 8;
+      b.scare = Math.max(b.scare, Math.sqrt(f));
+    }
+  }
+
+  /* Fury meter */
+  function buildSegs() {
+    segsEl.innerHTML = '';
+    for (var i = 0; i < P.escapeAt; i++) {
+      var s = document.createElement('span'); s.className = 'seg'; segsEl.appendChild(s);
+    }
+    updateHud();
+  }
+  function updateHud() {
+    var segs = segsEl.children;
+    for (var i = 0; i < segs.length; i++) segs[i].classList.toggle('on', escaped || i < clicks);
+    furyText.textContent = escaped ? 'They got out.' : clicks + ' / ' + P.escapeAt + ' clicks';
+    furyBtn.textContent = escaped ? 'Lock them back in' : 'Calm them down';
+  }
+
+  /* The frame opens on the side with the most room and the swarm streams out through it. */
+  function doEscape(now) {
+    escaped = true;
+    stage.classList.add('open');
+    var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+    var room = [
+      { s: box.y0, x: cx, y: box.y0 / 2 },
+      { s: vh - box.y1, x: cx, y: (box.y1 + vh) / 2 },
+      { s: box.x0, x: box.x0 / 2, y: cy },
+      { s: vw - box.x1, x: (box.x1 + vw) / 2, y: cy }
+    ];
+    var best = room[0];
+    for (var i = 1; i < room.length; i++) if (room[i].s > best.s) best = room[i];
+    breakout.x = best.x; breakout.y = best.y; breakout.until = now + 2600;
+    scaredAt = now;
+    updateHud();
+  }
+
+  function lockBack() {
+    clicks = 0; escaped = false; breakout.until = 0;
+    stage.classList.remove('open');
+    measure();
+    var w = box.x1 - box.x0, h = box.y1 - box.y0;
+    for (var i = 0; i < boids.length; i++) {
+      var b = boids[i];
+      if (b.x < box.x0 || b.x > box.x1 || b.y < box.y0 || b.y > box.y1) {
+        b.x = box.x0 + w * (0.15 + Math.random() * 0.7);
+        b.y = box.y0 + h * (0.15 + Math.random() * 0.7);
+      }
+    }
+    updateHud();
+  }
+
+  function step(dt, now) {
+    measure();
+    if (!escaped && clicks >= P.escapeAt) doEscape(now);
+
+    var n = boids.length, i, j;
+    var R = Math.max(70, size * 8), R2 = R * R;
+    var S = size * 3.2, S2 = S * S;
+
+    var wx0 = escaped ? 0 : box.x0, wy0 = escaped ? 0 : box.y0;
+    var wx1 = escaped ? vw : box.x1, wy1 = escaped ? vh : box.y1;
+    var M = Math.max(50, Math.min(wx1 - wx0, wy1 - wy0) * 0.12);
+
+    var gx = 0, gy = 0;
+    for (i = 0; i < n; i++) { gx += boids[i].x; gy += boids[i].y; }
+    gx /= Math.max(1, n); gy /= Math.max(1, n);
+
+    var inBox = mouse.x >= box.x0 && mouse.x <= box.x1 && mouse.y >= box.y0 && mouse.y <= box.y1;
+    mouse.active = mouse.seen && (escaped || inBox);
+    var mouseGain = mouse.active ? Math.min(1, Math.max(0, (now - scaredAt - 700) / 1500)) : 0;
+    var breakGain = now < breakout.until ? Math.min(1, (breakout.until - now) / 800) : 0;
+    var wander = 0.04 + anger * 0.05;
+
+    for (i = 0; i < n; i++) {
+      var b = boids[i];
+      var sx = 0, sy = 0, avx = 0, avy = 0, cx = 0, cy = 0, cnt = 0;
+
+      for (j = 0; j < n; j++) {
+        if (j === i) continue;
+        var o = boids[j];
+        var dx = b.x - o.x, dy = b.y - o.y, d2 = dx * dx + dy * dy;
+        if (d2 > R2) continue;
+        cnt++; avx += o.vx; avy += o.vy; cx += o.x; cy += o.y;
+        if (d2 < S2 && d2 > 0.0001) {
+          var d = Math.sqrt(d2);
+          var w = (1 - d / S) / d;
+          sx += dx * w; sy += dy * w;
+        }
+      }
+
+      var ax = 0, ay = 0;
+
+      /* 1. Don't collide with your neighbour */
+      ax += sx * 0.35 * P.separation;
+      ay += sy * 0.35 * P.separation;
+
+      if (cnt > 0) {
+        /* 2. Match the direction of your neighbours */
+        ax += (avx / cnt - b.vx) * 0.07 * P.alignment;
+        ay += (avy / cnt - b.vy) * 0.07 * P.alignment;
+        /* 3. Don't stray too far: drift toward the local centre */
+        var ccx = cx / cnt - b.x, ccy = cy / cnt - b.y;
+        var cd = Math.sqrt(ccx * ccx + ccy * ccy) || 1;
+        var pull = Math.min(cd / R, 1) * 0.06 * P.cohesion;
+        ax += (ccx / cd) * pull; ay += (ccy / cd) * pull;
+      }
+      if (cnt < 3) {
+        /* Stragglers head back toward the middle of the whole swarm */
+        var lx = gx - b.x, ly = gy - b.y, ld = Math.sqrt(lx * lx + ly * ly) || 1;
+        ax += (lx / ld) * 0.05 * P.cohesion; ay += (ly / ld) * 0.05 * P.cohesion;
+      }
+
+      /* 4. Don't hit the border: the box while locked in, the screen once out */
+      var k = 0.4 * P.border;
+      if (b.x < wx0 + M) ax += (wx0 + M - b.x) / M * k;
+      if (b.x > wx1 - M) ax -= (b.x - (wx1 - M)) / M * k;
+      if (b.y < wy0 + M) ay += (wy0 + M - b.y) / M * k;
+      if (b.y > wy1 - M) ay -= (b.y - (wy1 - M)) / M * k;
+
+      /* The breakout: everyone streams toward the opening for a couple of seconds */
+      if (breakGain > 0) {
+        var tx = breakout.x - b.x, ty = breakout.y - b.y, td = Math.sqrt(tx * tx + ty * ty) || 1;
+        ax += (tx / td) * 0.16 * breakGain; ay += (ty / td) * 0.16 * breakGain;
+      }
+
+      /* Cursor: gentle pull, with a small push when too close so they circle */
+      if (mouseGain > 0) {
+        var mx = mouse.x - b.x, my = mouse.y - b.y, md = Math.sqrt(mx * mx + my * my) || 1;
+        var g = P.mouse * mouseGain;
+        ax += (mx / md) * 0.07 * g * Math.min(md / 160, 1);
+        ay += (my / md) * 0.07 * g * Math.min(md / 160, 1);
+        if (md < 60) { var q = (1 - md / 60) * 0.25 * g; ax -= (mx / md) * q; ay -= (my / md) * q; }
+      }
+
+      /* A little wander so the swarm never freezes; angrier arrows twitch more */
+      ax += (Math.random() - 0.5) * wander;
+      ay += (Math.random() - 0.5) * wander;
+
+      b.ax = ax; b.ay = ay;
+    }
+
+    for (i = 0; i < n; i++) {
+      var p = boids[i];
+      p.vx += p.ax * dt; p.vy += p.ay * dt;
+      var sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy) || 0.0001;
+      var maxS = 3.2 + p.scare * 3.5 + anger * 1.0, minS = 1.4;
+      if (sp > maxS) { var f1 = 1 - (1 - maxS / sp) * Math.min(1, 0.25 * dt); p.vx *= f1; p.vy *= f1; }
+      else if (sp < minS) { var f2 = minS / sp; p.vx *= f2; p.vy *= f2; }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.scare = Math.max(0, p.scare - 0.012 * dt);
+
+      /* Hard wall as a safety net, in case the edge rule is turned down */
+      if (p.x < wx0 + 3) { p.x = wx0 + 3; p.vx = Math.abs(p.vx); }
+      if (p.x > wx1 - 3) { p.x = wx1 - 3; p.vx = -Math.abs(p.vx); }
+      if (p.y < wy0 + 3) { p.y = wy0 + 3; p.vy = Math.abs(p.vy); }
+      if (p.y > wy1 - 3) { p.y = wy1 - 3; p.vy = -Math.abs(p.vy); }
+    }
+
+    for (i = shocks.length - 1; i >= 0; i--) {
+      shocks[i].age += dt / 40;
+      if (shocks[i].age >= 1) shocks.splice(i, 1);
+    }
+
+    var target = escaped ? 1 : clicks / P.escapeAt;
+    anger += (target - anger) * Math.min(1, 0.1 * dt);
+  }
+
+  function arrowPath(path, b) {
+    var a = Math.atan2(b.vy, b.vx), c = Math.cos(a), s = Math.sin(a);
+    var pts = [[size, 0], [-size * 0.8, -size * 0.62], [-size * 0.35, 0], [-size * 0.8, size * 0.62]];
+    for (var i = 0; i < 4; i++) {
+      var X = b.x + pts[i][0] * c - pts[i][1] * s;
+      var Y = b.y + pts[i][0] * s + pts[i][1] * c;
+      if (i === 0) path.moveTo(X, Y); else path.lineTo(X, Y);
+    }
+    path.closePath();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, vw, vh);
+    var i;
+
+    for (i = 0; i < shocks.length; i++) {
+      var sh = shocks[i], e = 1 - Math.pow(1 - sh.age, 3);
+      ctx.globalAlpha = (1 - sh.age) * 0.7;
+      ctx.strokeStyle = colors.accent; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sh.x, sh.y, sh.radius * e, 0, 6.283); ctx.stroke();
+    }
+
+    if (mouse.active) {
+      ctx.globalAlpha = 0.55; ctx.strokeStyle = colors.accent; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 9, 0, 6.283); ctx.stroke();
+    }
+
+    /* The more clicks, the further the base colour moves from the arrow blue to red */
+    var r = Math.round(rgb.arrow[0] + (rgb.rage[0] - rgb.arrow[0]) * anger);
+    var g = Math.round(rgb.arrow[1] + (rgb.rage[1] - rgb.arrow[1]) * anger);
+    var bl = Math.round(rgb.arrow[2] + (rgb.rage[2] - rgb.arrow[2]) * anger);
+    ctx.globalAlpha = 0.92; ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + bl + ')';
+    ctx.beginPath();
+    for (i = 0; i < boids.length; i++) arrowPath(ctx, boids[i]);
+    ctx.fill();
+
+    ctx.fillStyle = colors.accent;
+    for (i = 0; i < boids.length; i++) {
+      var b = boids[i];
+      if (b.scare < 0.03) continue;
+      ctx.globalAlpha = Math.min(1, b.scare * 1.1);
+      ctx.beginPath(); arrowPath(ctx, b); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  var last = 0;
+  function frame(t) {
+    var dt = last ? Math.min(2.5, (t - last) / 16.667) : 1;
+    last = t;
+    step(dt, t);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  /* Pointer input, tracked on the whole window so the swarm can follow once it is out */
+  window.addEventListener('pointermove', function (e) {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true;
+  });
+  document.documentElement.addEventListener('pointerleave', function () { mouse.seen = false; });
+  window.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') mouse.seen = false; });
+  window.addEventListener('pointercancel', function () { mouse.seen = false; });
+  window.addEventListener('pointerdown', function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest('input, button, label')) return;
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true;
+    measure();
+    var inside = mouse.x >= box.x0 && mouse.x <= box.x1 && mouse.y >= box.y0 && mouse.y <= box.y1;
+    if (!escaped && !inside) return;
+    scareAt(mouse.x, mouse.y, performance.now());
+    if (!escaped) { clicks = Math.min(P.escapeAt, clicks + 1); updateHud(); }
+  });
+
+  /* Controls */
+  var outputs = {}, inputs = {};
+  function fmt(c) { return c.int ? String(P[c.key]) : P[c.key].toFixed(1); }
+  controls.forEach(function (c) {
+    var wrap = document.createElement('div'); wrap.className = 'ctl';
+    var id = 'ctl-' + c.key;
+    wrap.innerHTML = '<div class="row"><label for="' + id + '">' + c.label + '</label><output id="' + id + '-out"></output></div>' +
+      '<input type="range" id="' + id + '" min="' + c.min + '" max="' + c.max + '" step="' + c.step + '" value="' + P[c.key] + '">';
+    panel.appendChild(wrap);
+    var inp = wrap.querySelector('input'), out = wrap.querySelector('output');
+    inputs[c.key] = inp; outputs[c.key] = out;
+    inp.addEventListener('input', function () {
+      P[c.key] = parseFloat(inp.value);
+      if (c.key === 'count') setCount(P.count);
+      if (c.key === 'escapeAt') { if (!escaped) clicks = Math.min(clicks, P.escapeAt - 1); buildSegs(); }
+      out.textContent = fmt(c);
+    });
+    out.textContent = fmt(c);
+  });
+
+  var reset = document.createElement('button');
+  reset.type = 'button'; reset.id = 'reset'; reset.textContent = 'Reset rules';
+  reset.addEventListener('click', function () {
+    controls.forEach(function (c) {
+      P[c.key] = DEFAULTS[c.key]; inputs[c.key].value = DEFAULTS[c.key];
+      outputs[c.key].textContent = fmt(c);
+    });
+    setCount(P.count);
+    if (!escaped) clicks = Math.min(clicks, P.escapeAt - 1);
+    buildSegs();
+  });
+  var rw = document.createElement('div'); rw.className = 'ctl'; rw.appendChild(reset);
+  panel.appendChild(rw);
+
+  furyBtn.addEventListener('click', function () {
+    if (escaped) lockBack();
+    else { clicks = 0; updateHud(); }
+  });
+
+  /* Theme: re-read colours when the viewer or OS switches theme */
+  try {
+    new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+  } catch (e) {}
+
+  readColors();
+  resize();
+  setCount(P.count);
+  buildSegs();
+  window.addEventListener('resize', resize);
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>

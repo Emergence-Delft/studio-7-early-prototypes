@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Webcam Stickman</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #ddd; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  button { background: #22c55e; color: #04210e; border: 0; padding: 10px 18px; font-size: 15px; border-radius: 8px; cursor: pointer; margin-right: 8px; }
+  button:disabled { background: #444; color: #888; cursor: default; }
+  #status { margin: 12px 0; color: #9ca3af; font-size: 14px; }
+  #wrap { position: relative; display: inline-block; }
+  video { width: 480px; max-width: 100%; border-radius: 8px; transform: scaleX(-1); background: #000; }
+</style>
+</head>
+<body>
+<h1>Webcam Stickman</h1>
+<button id="startBtn">1. Start camera</button>
+<button id="popBtn" disabled>2. Open stickman window</button>
+<div id="status">Click "Start camera" and allow webcam access.</div>
+<div id="wrap"><video id="video" autoplay playsinline muted></video></div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const video = document.getElementById("video");
+const startBtn = document.getElementById("startBtn");
+const popBtn = document.getElementById("popBtn");
+const statusEl = document.getElementById("status");
+
+let landmarker = null, popup = null, pctx = null, pcanvas = null;
+let smooth = null;               // smoothed landmarks
+const ALPHA = 0.5;               // smoothing (higher = snappier, lower = smoother)
+
+async function init() {
+  statusEl.textContent = "Loading pose model...";
+  const fileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const modelUrl = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+  try {
+    landmarker = await PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+      runningMode: "VIDEO", numPoses: 1
+    });
+  } catch (e) {
+    landmarker = await PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: modelUrl, delegate: "CPU" },
+      runningMode: "VIDEO", numPoses: 1
+    });
+  }
+}
+
+startBtn.onclick = async () => {
+  startBtn.disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    await init();
+    statusEl.textContent = "Tracking. Now open the stickman window (stand back so your whole body is visible).";
+    popBtn.disabled = false;
+    requestAnimationFrame(loop);
+  } catch (err) {
+    statusEl.textContent = "Error: " + err.message;
+    startBtn.disabled = false;
+  }
+};
+
+popBtn.onclick = () => {
+  popup = window.open("", "stickman", "width=600,height=800");
+  if (!popup) { statusEl.textContent = "Popup blocked - allow popups for this page and try again."; return; }
+  popup.document.open();
+  popup.document.write(`<!DOCTYPE html><title>Stickman</title>
+    <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style>
+    <canvas id="c"></canvas>`);
+  popup.document.close();
+  pcanvas = popup.document.getElementById("c");
+  pctx = pcanvas.getContext("2d");
+};
+
+// MediaPipe landmark indices
+const L = { nose:0, earL:7, earR:8, shL:11, shR:12, elL:13, elR:14, wrL:15, wrR:16,
+            hipL:23, hipR:24, knL:25, knR:26, anL:27, anR:28, ftL:31, ftR:32 };
+
+let lastTs = -1;
+function loop() {
+  requestAnimationFrame(loop);
+  if (!landmarker || video.readyState < 2) return;
+  const ts = performance.now();
+  if (ts === lastTs) return;
+  lastTs = ts;
+  const res = landmarker.detectForVideo(video, ts);
+  if (res.landmarks && res.landmarks.length) {
+    const lm = res.landmarks[0];
+    if (!smooth) smooth = lm.map(p => ({ ...p }));
+    else lm.forEach((p, i) => {
+      smooth[i].x += (p.x - smooth[i].x) * ALPHA;
+      smooth[i].y += (p.y - smooth[i].y) * ALPHA;
+      smooth[i].visibility = p.visibility;
+    });
+  }
+  draw();
+}
+
+function draw() {
+  if (!popup || popup.closed || !pctx) return;
+  const cw = pcanvas.width = popup.innerWidth;
+  const ch = pcanvas.height = popup.innerHeight;
+  pctx.fillStyle = "#000";
+  pctx.fillRect(0, 0, cw, ch);
+  if (!smooth) return;
+
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const s = Math.min(cw / vw, ch / vh);
+  const ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  // mirrored so it behaves like a mirror
+  const P = i => ({ x: ox + (1 - smooth[i].x) * vw * s, y: oy + smooth[i].y * vh * s, v: smooth[i].visibility ?? 1 });
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, v: Math.min(a.v, b.v) });
+
+  const nose = P(L.nose), eL = P(L.earL), eR = P(L.earR);
+  const shL = P(L.shL), shR = P(L.shR), elL = P(L.elL), elR = P(L.elR);
+  const wrL = P(L.wrL), wrR = P(L.wrR), hpL = P(L.hipL), hpR = P(L.hipR);
+  const knL = P(L.knL), knR = P(L.knR), anL = P(L.anL), anR = P(L.anR);
+  const ftL = P(L.ftL), ftR = P(L.ftR);
+
+  const neckBase = mid(shL, shR);
+  const pelvis = mid(hpL, hpR);
+  const headR = Math.max(12, Math.hypot(eL.x - eR.x, eL.y - eR.y) * 0.75);
+  const head = { x: nose.x, y: nose.y - headR * 0.1 };
+
+  pctx.strokeStyle = "#22ff55";
+  pctx.fillStyle = "#22ff55";
+  pctx.lineWidth = Math.max(4, cw / 120);
+  pctx.lineCap = "round";
+  pctx.lineJoin = "round";
+  pctx.shadowColor = "#22ff55";
+  pctx.shadowBlur = 12;
+
+  const line = (...pts) => {
+    if (pts.some(p => p.v < 0.3)) return;   // skip points not visible
+    pctx.beginPath();
+    pctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) pctx.lineTo(pts[i].x, pts[i].y);
+    pctx.stroke();
+  };
+  const dot = (p, r) => {
+    if (p.v < 0.3) return;
+    pctx.beginPath(); pctx.arc(p.x, p.y, r, 0, Math.PI * 2); pctx.fill();
+  };
+
+  // head
+  pctx.beginPath(); pctx.arc(head.x, head.y, headR, 0, Math.PI * 2); pctx.stroke();
+  // neck + spine
+  const chin = { x: head.x + (neckBase.x - head.x) * 0.0, y: head.y + headR, v: 1 };
+  line(chin, neckBase);
+  line(neckBase, pelvis);
+  // shoulders + hips
+  line(shL, shR);
+  line(hpL, hpR);
+  // arms
+  line(shL, elL, wrL);
+  line(shR, elR, wrR);
+  // legs (with feet)
+  line(hpL, knL, anL, ftL);
+  line(hpR, knR, anR, ftR);
+  // joints
+  const jr = pctx.lineWidth * 0.9;
+  [elL, elR, wrL, wrR, knL, knR, anL, anR, shL, shR, hpL, hpR].forEach(p => dot(p, jr));
+}
+</script>
+</body>
+</html>

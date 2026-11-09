@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hex Mirror</title>
+<style>
+  :root {
+    --bg: #111214; --panel: #1b1d20; --line: #2c2f34; --text: #e8e9eb; --muted: #8b9098; --accent: #f2f2f2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; padding: 20px; min-height: 100vh; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  #stage { display: flex; align-items: center; justify-content: center; background: #000; border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-height: 60vh; }
+  #hex { width: 100%; height: auto; max-height: calc(100vh - 80px); }
+  aside { display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: .02em; }
+  .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .cam { position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 4/3; }
+  .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+  label { display: flex; justify-content: space-between; color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  label output { color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  select { width: 100%; margin-top: 4px; background: #2a2d32; color: var(--text); border: 1px solid #3a3e45; border-radius: 8px; padding: 8px 10px; font: inherit; }
+  button { background: #2a2d32; color: var(--text); border: 1px solid #3a3e45; border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #33373d; }
+  button.primary { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 600; }
+  button.on { outline: 2px solid var(--accent); }
+  .sw { display: flex; gap: 6px; margin-top: 10px; }
+  .sw i { flex: 1; height: 14px; border-radius: 3px; border: 1px solid #000; }
+  #status { color: var(--muted); font-size: 12.5px; min-height: 2.8em; }
+  #status.err { color: #ff9b8a; }
+  code { background: #0d0e10; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="stage"><canvas id="hex"></canvas></div>
+
+  <aside>
+    <div class="card">
+      <h1>Hex Mirror</h1>
+      <p class="sub">20 × 20 hexagonal pixels · 4 tones · face tracking</p>
+      <div class="sw" id="swatches"></div>
+    </div>
+
+    <div class="card">
+      <div class="cam"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+      <div class="row">
+        <button id="startBtn" class="primary">Start camera</button>
+        <button id="trackBtn" class="on">Face tracking: on</button>
+        <button id="invertBtn">Invert: off</button>
+      </div>
+      <label>Pixel shape</label>
+      <select id="shape">
+        <option value="hexagon">Hexagon (staggered)</option>
+        <option value="staggered">Circle (staggered)</option>
+        <option value="square">Square</option>
+        <option value="circle">Circle (square grid)</option>
+      </select>
+      <label>Resolution (pixels per side) <output id="resV"></output></label>
+      <input id="res" type="range" min="6" max="40" step="1" value="20">
+      <label>Zoom (crop = face × <output id="zoomV"></output>)</label>
+      <input id="zoom" type="range" min="1.3" max="5" step="0.1" value="2.4">
+      <label>Temporal smoothing <output id="smoothV"></output></label>
+      <input id="smooth" type="range" min="0" max="0.9" step="0.05" value="0.5">
+      <label>Anti-flicker margin <output id="hystV"></output></label>
+      <input id="hyst" type="range" min="0" max="0.2" step="0.01" value="0.06">
+      <label>Send rate to servos <output id="fpsV"></output></label>
+      <input id="fps" type="range" min="2" max="30" step="1" value="20">
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-top:0">
+        <button id="serialBtn">Connect ESP32 (USB)</button>
+      </div>
+      <p class="sub" style="margin-top:8px">Sends 400 tone values per frame (<code>AA 55</code> + 400 bytes + XOR) at 921600 baud to the firmware. Needs Chrome or Edge.</p>
+      <div id="status"></div>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+// ---------------------------------------------------------------- constants
+const TONES = 4, SERVO_GRID = 20;           // servo hardware is 20 x 20 = 400
+const R = 1 / Math.sqrt(3);                 // hexagon circumradius (pitch = 1)
+const DY = 1.5 * R;
+let COLS, ROWS, N, UNITS_W, UNITS_H, ASPECT, SCALE, WORK_W, WORK_H;   // set by buildGrid()
+let shape = 'hexagon';                       // hexagon | staggered | square | circle
+const isStaggered = () => shape === 'hexagon' || shape === 'staggered';
+const tm = { lo: 30, hi: 220, v: null, levels: null };               // tone mapper state
+const TONE_CSS = ['#121212', '#5a5a5a', '#a5a5a5', '#f5f5f5'];   // black, dark grey, light grey, white
+
+const $ = id => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), hexCanvas = $('hex');
+const statusEl = $('status');
+function setStatus(msg, err = false) { statusEl.textContent = msg; statusEl.className = err ? 'err' : ''; }
+
+// swatches
+$('swatches').innerHTML = TONE_CSS.map(c => `<i style="background:${c}"></i>`).join('');
+
+// ----------------------------------------------------------- hex geometry
+let centers, labels, counts;
+const work = document.createElement('canvas');   // cropped, mirrored webcam crop
+const wctx = work.getContext('2d', { willReadFrequently: true });
+
+function buildGrid(n) {
+  COLS = ROWS = n; N = n * n;
+  const stag = isStaggered();
+  const rowPitch = stag ? DY : 1, halfH = stag ? R : 0.5;
+  UNITS_W = COLS + (stag ? 0.5 : 0);
+  UNITS_H = 2 * halfH + (ROWS - 1) * rowPitch;
+  ASPECT = UNITS_W / UNITS_H;
+  SCALE = Math.max(5, Math.round(240 / n));      // working pixels per unit
+  WORK_W = Math.round(UNITS_W * SCALE);
+  WORK_H = Math.round(UNITS_H * SCALE);
+  work.width = WORK_W; work.height = WORK_H;
+
+  centers = new Float32Array(N * 2);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const i = r * COLS + c;
+    centers[2 * i] = c + 0.5 + (stag ? 0.5 * (r % 2) : 0);
+    centers[2 * i + 1] = halfH + r * rowPitch;
+  }
+  // label map: working pixel -> pixel index (-1 outside)
+  labels = new Int16Array(WORK_W * WORK_H).fill(-1);
+  counts = new Float32Array(N);
+  for (let y = 0; y < WORK_H; y++) {
+    const py = (y + 0.5) / SCALE;
+    for (let x = 0; x < WORK_W; x++) {
+      const px = (x + 0.5) / SCALE;
+      let best = -1;
+      if (stag) {
+        let bd = R * R;
+        const r0 = Math.max(0, Math.floor((py - R) / DY) - 1), r1 = Math.min(ROWS - 1, r0 + 3);
+        for (let r = r0; r <= r1; r++) {
+          const off = 0.5 + 0.5 * (r % 2);
+          const c0 = Math.max(0, Math.floor(px - off) - 1), c1 = Math.min(COLS - 1, c0 + 2);
+          for (let c = c0; c <= c1; c++) {
+            const dx = px - (c + off), dy = py - (R + r * DY);
+            const d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; best = r * COLS + c; }
+          }
+        }
+      } else {
+        best = Math.min(ROWS - 1, Math.floor(py)) * COLS + Math.min(COLS - 1, Math.floor(px));
+      }
+      labels[y * WORK_W + x] = best;
+      if (best >= 0) counts[best]++;
+    }
+  }
+  tm.v = null; tm.levels = null;                 // restart tone smoothing for the new grid
+}
+
+function sampleHexes() {
+  const px = wctx.getImageData(0, 0, WORK_W, WORK_H).data;
+  const sums = new Float32Array(N);
+  for (let p = 0, q = 0; p < labels.length; p++, q += 4) {
+    const l = labels[p];
+    if (l >= 0) sums[l] += 0.299 * px[q] + 0.587 * px[q + 1] + 0.114 * px[q + 2];
+  }
+  for (let i = 0; i < N; i++) sums[i] /= Math.max(1, counts[i]);
+  return sums;
+}
+
+// ----------------------------------------------------------- face tracking
+let detector = null, detectorKind = 'none';
+let box = null;               // {cx, cy, w} in video pixels (unmirrored)
+let lastSeen = 0, frameNo = 0;
+const BOX_SMOOTH = 0.25;
+
+async function loadDetector() {
+  try {
+    const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    detector = await vision.FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' },
+      runningMode: 'VIDEO',
+      minDetectionConfidence: 0.5
+    });
+    detectorKind = 'mediapipe';
+  } catch (e) {
+    console.warn('MediaPipe failed', e);
+    if ('FaceDetector' in window) {
+      try { detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 }); detectorKind = 'native'; } catch (_) {}
+    }
+  }
+  if (detectorKind === 'none') setStatus('Face detector could not load (needs internet for the first run). Using a fixed centre crop.', true);
+}
+
+async function detectFace() {
+  if (!detector || video.readyState < 2) return;
+  let faces = [];
+  if (detectorKind === 'mediapipe') {
+    const res = detector.detectForVideo(video, performance.now());
+    faces = res.detections.map(d => d.boundingBox).filter(Boolean)
+      .map(b => ({ x: b.originX, y: b.originY, w: b.width, h: b.height }));
+  } else if (detectorKind === 'native') {
+    const res = await detector.detect(video);
+    faces = res.map(f => ({ x: f.boundingBox.x, y: f.boundingBox.y, w: f.boundingBox.width, h: f.boundingBox.height }));
+  }
+  if (!faces.length) return;
+  const f = faces.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  const t = { cx: f.x + f.w / 2, cy: f.y + f.h / 2 + 0.08 * f.w, w: f.w };
+  box = box ? { cx: box.cx + (t.cx - box.cx) * BOX_SMOOTH, cy: box.cy + (t.cy - box.cy) * BOX_SMOOTH, w: box.w + (t.w - box.w) * BOX_SMOOTH } : t;
+  lastSeen = performance.now();
+}
+
+function drawCrop(zoom, tracking) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  let cx = vw / 2, cy = vh / 2, fw = vh * 0.45;
+  if (tracking && box) ({ cx, cy, w: fw } = box);
+  const cropW = Math.max(40, fw * zoom), cropH = cropW / ASPECT;
+  const sx = cx - cropW / 2, sy = cy - cropH / 2;
+  wctx.setTransform(1, 0, 0, 1, 0, 0);
+  wctx.fillStyle = '#000'; wctx.fillRect(0, 0, WORK_W, WORK_H);
+  wctx.imageSmoothingQuality = 'high';
+  wctx.setTransform(-1, 0, 0, 1, WORK_W, 0);        // mirror
+  // clip the source rectangle to the video and shrink the destination to match
+  const k = WORK_W / cropW;
+  const x0 = Math.max(0, sx), y0 = Math.max(0, sy), x1 = Math.min(vw, sx + cropW), y1 = Math.min(vh, sy + cropH);
+  if (x1 > x0 && y1 > y0) wctx.drawImage(video, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * k, (y0 - sy) * k, (x1 - x0) * k, (y1 - y0) * k);
+  wctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+// ----------------------------------------------------------- tone mapping
+function toTones(grey, smooth, hyst, invert) {
+  const sorted = Float32Array.from(grey).sort();
+  const lo = sorted[Math.floor(N * 0.04)], hi = Math.max(sorted[Math.floor(N * 0.96)], lo + 25);
+  tm.lo = 0.9 * tm.lo + 0.1 * lo; tm.hi = 0.9 * tm.hi + 0.1 * hi;
+  if (!tm.v) { tm.v = new Float32Array(N); tm.levels = new Uint8Array(N); tm.fresh = true; }
+  const out = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    const v = Math.min(0.9999, Math.max(0, (grey[i] - tm.lo) / (tm.hi - tm.lo)));
+    tm.v[i] = tm.fresh ? v : smooth * tm.v[i] + (1 - smooth) * v;
+    let cand = Math.min(TONES - 1, Math.floor(tm.v[i] * TONES));
+    if (!tm.fresh) {
+      const prev = tm.levels[i];
+      if (tm.v[i] >= prev / TONES - hyst && tm.v[i] < (prev + 1) / TONES + hyst) cand = prev;
+    }
+    tm.levels[i] = cand;
+    out[i] = invert ? TONES - 1 - cand : cand;
+  }
+  tm.fresh = false;
+  return out;
+}
+
+// ----------------------------------------------------------- rendering
+const hctx = hexCanvas.getContext('2d');
+function drawHexes(levels) {
+  const unit = 720 / UNITS_W;
+  const W = Math.ceil(UNITS_W * unit) + 4, H = Math.ceil(UNITS_H * unit) + 4;
+  if (hexCanvas.width !== W || hexCanvas.height !== H) { hexCanvas.width = W; hexCanvas.height = H; }
+  hctx.fillStyle = '#000'; hctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < N; i++) {
+    const cx = centers[2 * i] * unit + 2, cy = centers[2 * i + 1] * unit + 2;
+    hctx.beginPath();
+    if (shape === 'hexagon') {
+      for (let k = 0; k < 6; k++) {
+        const a = Math.PI / 180 * (30 + 60 * k);
+        const x = cx + Math.cos(a) * R * unit * 0.94, y = cy + Math.sin(a) * R * unit * 0.94;
+        k ? hctx.lineTo(x, y) : hctx.moveTo(x, y);
+      }
+      hctx.closePath();
+    } else if (shape === 'square') {
+      const h = unit * 0.47;
+      hctx.rect(cx - h, cy - h, 2 * h, 2 * h);
+    } else {                                     // circle, staggered
+      hctx.arc(cx, cy, unit * 0.47, 0, Math.PI * 2);
+    }
+    hctx.fillStyle = TONE_CSS[levels[i]];
+    hctx.fill();
+  }
+}
+buildGrid(SERVO_GRID);
+drawHexes(new Uint8Array(N).fill(1));
+
+function drawOverlay(tracking) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (overlay.width !== vw) { overlay.width = vw; overlay.height = vh; }
+  const o = overlay.getContext('2d');
+  o.clearRect(0, 0, vw, vh);
+  if (tracking && box) {
+    o.lineWidth = Math.max(2, vw / 200);
+    o.strokeStyle = performance.now() - lastSeen < 1500 ? '#4ade80' : '#f87171';
+    o.strokeRect(box.cx - box.w / 2, box.cy - box.w / 2, box.w, box.w);
+  }
+}
+
+// ----------------------------------------------------------- serial output
+let serialPort = null, writer = null, writing = false, lastSent = 0;
+$('serialBtn').onclick = async () => {
+  if (!('serial' in navigator)) { setStatus('Web Serial is not available. Use Chrome or Edge on a desktop.', true); return; }
+  try {
+    if (writer) { writer.releaseLock(); writer = null; await serialPort.close(); serialPort = null; $('serialBtn').textContent = 'Connect ESP32 (USB)'; setStatus('Disconnected.'); return; }
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 921600 });
+    writer = serialPort.writable.getWriter();
+    $('serialBtn').textContent = 'Disconnect ESP32';
+    setStatus('Connected. Sending frames.');
+  } catch (e) { setStatus('Serial error: ' + e.message, true); serialPort = null; writer = null; }
+};
+async function sendFrame(levels) {
+  if (!writer || writing) return;
+  const buf = new Uint8Array(N + 3);
+  buf[0] = 0xAA; buf[1] = 0x55;
+  let chk = 0;
+  for (let i = 0; i < N; i++) { buf[2 + i] = levels[i]; chk ^= levels[i]; }
+  buf[N + 2] = chk;
+  writing = true;
+  try { await writer.write(buf); } catch (e) { setStatus('Serial write failed: ' + e.message, true); }
+  writing = false;
+}
+
+// ----------------------------------------------------------- UI wiring
+let tracking = true, invert = false, running = false;
+const bind = (id, outId, fmt) => { const el = $(id), out = $(outId); const u = () => out.textContent = fmt(+el.value); el.oninput = u; u(); return () => +el.value; };
+const getRes = bind('res', 'resV', v => `${v} × ${v} (${v * v} px)`);
+$('res').addEventListener('input', () => {
+  buildGrid(getRes());
+  drawHexes(new Uint8Array(N).fill(1));
+  if (writer) setStatus(N === SERVO_GRID ** 2 ? 'Connected. Sending frames.' : 'Preview only: the servo wall is 20 × 20, so frames are not sent at this resolution.');
+});
+$('shape').addEventListener('change', e => {
+  shape = e.target.value;
+  buildGrid(getRes());
+  drawHexes(new Uint8Array(N).fill(1));
+});
+const getZoom = bind('zoom', 'zoomV', v => v.toFixed(1));
+const getSmooth = bind('smooth', 'smoothV', v => v.toFixed(2));
+const getHyst = bind('hyst', 'hystV', v => v.toFixed(2));
+const getFps = bind('fps', 'fpsV', v => v + ' fps');
+$('trackBtn').onclick = e => { tracking = !tracking; e.target.textContent = 'Face tracking: ' + (tracking ? 'on' : 'off'); e.target.classList.toggle('on', tracking); };
+$('invertBtn').onclick = e => { invert = !invert; e.target.textContent = 'Invert: ' + (invert ? 'on' : 'off'); e.target.classList.toggle('on', invert); };
+
+$('startBtn').onclick = async () => {
+  if (running) return;
+  try {
+    setStatus('Requesting camera…');
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    await video.play();
+    running = true;
+    $('startBtn').style.display = 'none';
+    setStatus('Loading face detector…');
+    loadDetector().then(() => { if (detectorKind !== 'none') setStatus('Face tracking ready (' + detectorKind + ').'); });
+    requestAnimationFrame(loop);
+  } catch (e) { setStatus('Camera error: ' + e.message, true); }
+};
+
+async function loop() {
+  if (!running) return;
+  frameNo++;
+  if (tracking && frameNo % 2 === 0) await detectFace();
+  drawCrop(getZoom(), tracking);
+  const levels = toTones(sampleHexes(), getSmooth(), getHyst(), invert);
+  drawHexes(levels);
+  drawOverlay(tracking);
+  const now = performance.now();
+  if (writer && N === SERVO_GRID ** 2 && now - lastSent >= 1000 / getFps()) { lastSent = now; sendFrame(levels); }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
