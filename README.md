@@ -6,9 +6,9 @@ Most prototypes are single HTML files that run in a browser. The live links belo
 
 | Prototype | What it is | Try it |
 |---|---|---|
-| [Spindelpaal 3D](#spindelpaal-3d) | A pole of ball screws that makes spheres breathe | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/spindelpaal-3d.html) |
-| [Light-tree lamp](#light-tree-lamp) | Sliding tube units that fold open into flowers of light | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/light-tree-lamp/Light-tree%20lamp%20prototype.html) |
-| [Arrow Swarm](#arrow-swarm) | A swarm that comes when called and flees when scared | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/arrow-swarm/Arrow%20Swarm.html) |
-| [Facing Life](#facing-life) | Your face as a pixel grid, brought to life by John Conway's Game of Life | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/facing-life/hex_mirror.html) |
+| Spindelpaal 3D | A pole of ball screws that makes spheres breathe | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/spindelpaal-3d.html) |
+| Light-tree lamp | Sliding tube units that fold open into flowers of light | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/light-tree-lamp/Light-tree%20lamp%20prototype.html) |
+| Arrow Swarm | A swarm that comes when called and flees when scared | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/arrow-swarm/Arrow%20Swarm.html) |
+| Facing Life | Your face as a pixel grid, brought to life by John Conway's Game of Life | [Open](https://emergence-delft.github.io/studio-7-early-prototypes/facing-life/hex_mirror.html) |
 
 
