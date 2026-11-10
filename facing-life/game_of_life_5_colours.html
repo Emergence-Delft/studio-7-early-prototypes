@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game of Life – 5 colours</title>
+<!--
+  Game of Life - 5 colours (browser version of "game of life 5 colours.py")
+
+  1. The webcam is shown live, pixelated into 5 colours. The colours are picked
+     automatically from what the camera sees: the 5 main colours of the picture
+     (e.g. your shirt, skin, wall, hair...).
+  2. Press SPACE / ENTER (or the button): the frame freezes and each colour
+     becomes its own Game of Life. The 5 games run at the same time, drawn
+     translucent on top of each other, so where they overlap the colours mix.
+  3. Press SPACE / ENTER again to go back to the camera.
+
+  No webcam? "Try without camera" starts from a random colour picture.
+-->
+<style>
+  :root{
+    --bg:#101014; --panel:#16161e; --ink:#eef0f8; --ink-2:#a9acc4;
+    --border:#2c2d3d; --accent:#ff5a8a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body{display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 16px 22px}
+  h1{margin:0;font-size:22px;letter-spacing:.2px}
+  .sub{margin:0;color:var(--ink-2);max-width:640px;text-align:center}
+  button{font:inherit;color:var(--ink);background:#23243a;border:1px solid var(--border);
+    border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:#4a4c6a}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#14040a;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  kbd{font:12px ui-monospace,Menlo,Consolas,monospace;background:#2a2b40;border:1px solid #3a3c55;border-radius:4px;padding:0 5px}
+  #stage{position:relative;width:min(94vw,1100px);height:calc(100vh - 250px);min-height:240px;
+    display:flex;align-items:center;justify-content:center;background:#07070a;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  #view{display:none}
+  #view.pixelated{image-rendering:pixelated;image-rendering:crisp-edges}
+  #msg{color:var(--ink-2);text-align:center;padding:20px}
+  #status{position:absolute;top:10px;left:12px;font-size:12px;color:var(--ink-2);background:rgba(16,16,20,.75);
+    border-radius:6px;padding:2px 8px;font-variant-numeric:tabular-nums;display:none}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:center}
+  .settings{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;color:var(--ink-2);font-size:13px}
+  .settings label{display:flex;gap:8px;align-items:center}
+  .settings input[type=range]{width:120px;accent-color:var(--accent)}
+  .settings input[type=checkbox]{accent-color:var(--accent)}
+  .settings output{color:var(--ink);min-width:2.6em;font-variant-numeric:tabular-nums}
+  #swatches{display:flex;gap:6px;height:14px}
+  #swatches span{width:28px;border-radius:4px}
+</style>
+</head>
+<body>
+<h1>Game of Life – 5 colours</h1>
+<p class="sub">Your webcam in its 5 main colours. Freeze a frame and each colour becomes its own Game of Life, drawn translucent so overlapping colours mix.</p>
+<div id="stage">
+  <canvas id="view" class="pixelated"></canvas>
+  <div id="msg">Click <b>Start camera</b> and allow webcam access,<br>or try it with a random picture.</div>
+  <div id="status"></div>
+</div>
+<div id="swatches"></div>
+<div class="row">
+  <button id="btnCam" class="primary">Start camera</button>
+  <button id="btnRandom">Try without camera</button>
+  <button id="btnMain" disabled>Take photo &amp; start <kbd>Space</kbd></button>
+</div>
+<div class="settings">
+  <label>Cells across <input id="setCells" type="range" min="40" max="640" step="8" value="320"><output id="outCells">320</output></label>
+  <label>Generations / s <input id="setSpeed" type="range" min="1" max="60" step="1" value="10"><output id="outSpeed">10</output></label>
+  <label>Opacity % <input id="setOpacity" type="range" min="10" max="100" step="5" value="70"><output id="outOpacity">70</output></label>
+  <label><input id="setMirror" type="checkbox" checked> Mirror</label>
+</div>
+<script>
+(function () {
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---------------- colour helpers (OpenCV-style 8-bit HSV: hue 0-180) ----------------
+function rgb2hsv(r, g, b) {
+  const v = Math.max(r, g, b), mn = Math.min(r, g, b), d = v - mn;
+  const s = v === 0 ? 0 : (d / v) * 255;
+  let h = 0;
+  if (d > 0) {
+    if (v === r) h = 60 * (g - b) / d;
+    else if (v === g) h = 120 + 60 * (b - r) / d;
+    else h = 240 + 60 * (r - g) / d;
+    if (h < 0) h += 360;
+  }
+  return [Math.round(h / 2) % 180, Math.round(s), v];   // rounded like OpenCV's 8-bit HSV
+}
+function hsv2rgb(h, s, v) {
+  const H = (h * 2) % 360, c = v * (s / 255), x = c * (1 - Math.abs(((H / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (H < 60) [r, g, b] = [c, x, 0];
+  else if (H < 120) [r, g, b] = [x, c, 0];
+  else if (H < 180) [r, g, b] = [0, c, x];
+  else if (H < 240) [r, g, b] = [0, x, c];
+  else if (H < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+// Group the pixels into K colour groups (k-means), starting from last
+// frame's colours so they stay steady instead of flickering.
+function findColors(px, n, K, centers) {
+  const labels = new Uint8Array(n);
+  if (!centers) {                       // first frame: spread the starting colours from dark to bright
+    const idx = Array.from({ length: n }, (_, i) => i);
+    idx.sort((a, b) => (px[a*3] + px[a*3+1] + px[a*3+2]) - (px[b*3] + px[b*3+1] + px[b*3+2]));
+    centers = [];
+    for (let k = 0; k < K; k++) {
+      const p = idx[Math.floor(k * (n - 1) / (K - 1))];
+      centers.push([px[p*3], px[p*3+1], px[p*3+2]]);
+    }
+  }
+  const sum = new Float64Array(K * 3), cnt = new Uint32Array(K);
+  for (let it = 0; it < 4; it++) {
+    sum.fill(0); cnt.fill(0);
+    for (let i = 0; i < n; i++) {
+      const r = px[i*3], g = px[i*3+1], b = px[i*3+2];
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < K; k++) {
+        const c = centers[k], dr = r - c[0], dg = g - c[1], db = b - c[2];
+        const d = dr*dr + dg*dg + db*db;
+        if (d < bd) { bd = d; best = k; }
+      }
+      labels[i] = best; cnt[best]++;
+      sum[best*3] += r; sum[best*3+1] += g; sum[best*3+2] += b;
+    }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k]) centers[k] = [sum[k*3] / cnt[k], sum[k*3+1] / cnt[k], sum[k*3+2] / cnt[k]];
+      else { const p = (Math.random() * n) | 0; centers[k] = [px[p*3], px[p*3+1], px[p*3+2]]; }   // unused colour: jump to a random pixel
+    }
+  }
+  return { labels, centers };
+}
+
+// Turn the camera's colours into bright, saturated versions of themselves.
+// Greyish colours (white wall, black hair...) have no real hue, so they get
+// a hue far away from the other colours, to keep everything colourful.
+function vivid(centers, boost, minSat, minBright) {
+  const hsv = centers.map(c => rgb2hsv(...c.map(v => Math.floor(Math.min(255, Math.max(0, v))))));
+  const rawSat = hsv.map(h => h[1]);
+  const grey = rawSat.map(s => s < 45);
+  const taken = hsv.filter((_, i) => !grey[i]).map(h => h[0]);
+  const greys = hsv.map((_, i) => i).filter(i => grey[i]).sort((a, b) => hsv[a][2] - hsv[b][2]);
+  for (const i of greys) {
+    let hue;
+    if (taken.length) {
+      let bestGap = -1;
+      for (let c = 0; c < 180; c += 6) {
+        let gap = Infinity;
+        for (const t of taken) gap = Math.min(gap, Math.abs((((c - t) + 90) % 180 + 180) % 180 - 90));
+        if (gap > bestGap) { bestGap = gap; hue = c; }
+      }
+    } else hue = 120 + 25 * i;          // nothing to avoid: start from blue/purple
+    hsv[i][0] = hue % 180;
+    taken.push(hsv[i][0]);
+  }
+  return hsv.map((h, i) => hsv2rgb(
+    Math.floor(h[0]),
+    Math.floor(Math.min(255, Math.max(rawSat[i] * boost, minSat))),
+    Math.floor(Math.min(255, Math.max(h[2] * 1.3, minBright)))
+  ).map(Math.round));
+}
+
+// ---------------- camera ----------------
+const Cam = {
+  video: null, stream: null, canvas: document.createElement("canvas"), ctx: null,
+  async start() {
+    if (this.stream) return true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      this.video = document.createElement("video");
+      this.video.muted = true; this.video.playsInline = true;
+      this.video.srcObject = this.stream;
+      await this.video.play();
+      return true;
+    } catch (e) { this.stream = null; return false; }
+  },
+  ready() { return !!(this.stream && this.video && this.video.readyState >= 2 && this.video.videoWidth); },
+  aspect() { return this.ready() ? this.video.videoHeight / this.video.videoWidth : 0.75; },
+  // the camera frame shrunk to cols x rows (area-averaged), as RGBA bytes
+  grab(cols, rows, mirror) {
+    if (!this.ready()) return null;
+    const c = this.canvas;
+    if (c.width !== cols || c.height !== rows) { c.width = cols; c.height = rows; this.ctx = null; }
+    if (!this.ctx) this.ctx = c.getContext("2d", { willReadFrequently: true });
+    const x = this.ctx;
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.save();
+    if (mirror) { x.translate(cols, 0); x.scale(-1, 1); }
+    x.drawImage(this.video, 0, 0, cols, rows);
+    x.restore();
+    return x.getImageData(0, 0, cols, rows).data;
+  },
+};
+const CAM_FAIL = "Could not get a picture from a webcam.<br>Allow camera access in the browser, close other apps that use the camera, or try it without a camera.";
+
+function gridFor(cols) { return [cols, Math.max(8, Math.round(cols * Cam.aspect()))]; }
+
+// ---------------- game of life ----------------
+// One generation of Conway's Game of Life on a wrapping grid (edges join up).
+function lifeWrap(a, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const up = ((y + h - 1) % h) * w, me = y * w, dn = ((y + 1) % h) * w;
+    for (let x = 0; x < w; x++) {
+      const l = (x + w - 1) % w, r = (x + 1) % w;
+      const n = a[up+l] + a[up+x] + a[up+r] + a[me+l] + a[me+r] + a[dn+l] + a[dn+x] + a[dn+r];
+      out[me + x] = (n === 3 || (a[me + x] && n === 2)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+// One generation where cells outside the grid count as dead.
+function lifeDead(a, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = y > 0, y1 = y < h - 1;
+    for (let x = 0; x < w; x++) {
+      const x0 = x > 0, x1 = x < w - 1, i = y * w + x;
+      let n = 0;
+      if (y0) { if (x0) n += a[i-w-1]; n += a[i-w]; if (x1) n += a[i-w+1]; }
+      if (x0) n += a[i-1];
+      if (x1) n += a[i+1];
+      if (y1) { if (x0) n += a[i+w-1]; n += a[i+w]; if (x1) n += a[i+w+1]; }
+      out[i] = (n === 3 || (a[i] && n === 2)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// a random picture of soft colour blobs plus some noise, for trying it without a camera
+function randomLabels(cols, rows, K) {
+  const blobs = Array.from({ length: 14 }, () => [Math.random() * cols, Math.random() * rows, (0.08 + Math.random() * 0.18) * cols, (Math.random() * K) | 0]);
+  const labels = new Uint8Array(cols * rows);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    let best = 0, bd = Infinity;
+    for (const [bx, by, br, k] of blobs) { const d = Math.hypot(x - bx, y - by) / br; if (d < bd) { bd = d; best = k; } }
+    labels[y * cols + x] = Math.random() < 0.25 ? (Math.random() * K) | 0 : best;
+  }
+  return labels;
+}
+const RANDOM_CENTERS = [[230, 60, 60], [60, 200, 90], [70, 110, 240], [240, 200, 50], [200, 200, 200]];
+
+// fit the view canvas into the stage (integer zoom for pixel grids, like the Python windows)
+function fitView(canvas, integer) {
+  const st = $("stage"), aw = st.clientWidth - 16, ah = st.clientHeight - 16;
+  let s = Math.min(aw / canvas.width, ah / canvas.height);
+  if (integer && s >= 1) s = Math.floor(s);
+  canvas.style.width = Math.round(canvas.width * s) + "px";
+  canvas.style.height = Math.round(canvas.height * s) + "px";
+  canvas.style.display = "block";
+  $("msg").style.display = "none";
+}
+function showMsg(html) { $("msg").innerHTML = html; $("msg").style.display = "block"; $("view").style.display = "none"; }
+function swatches(palette) { $("swatches").innerHTML = palette.map(c => `<span style="background:rgb(${c})"></span>`).join(""); }
+function bindRange(id, out, set) {
+  const el = $(id);
+  const f = () => { $(out).textContent = el.value; set(+el.value); };
+  el.addEventListener("input", f);
+}
+
+// ---------------- settings (the same knobs as the Python version) ----------------
+const S = {
+  cells: 320,          // cells across (the Python version uses PIXEL_SIZE = 1, i.e. the full camera width)
+  speed: 10,           // game generations per second
+  opacity: 0.7,        // 0-1: how see-through each colour layer is in the game
+  mirror: true,        // flip the camera like a mirror
+  numColors: 5,        // how many colours (= how many Games of Life)
+  colorBoost: 2.5,     // saturation multiplier
+  minSaturation: 190,  // 0-255
+  minBrightness: 220,  // 0-255
+};
+
+const view = $("view"), vctx = view.getContext("2d");
+let mode = "camera", source = null, groups = null, palette = null, centers = null, w = 0, h = 0;
+let layers = null, lifePalette = null, lastStep = 0, gen = 0;
+
+// Shrink the frame to the grid and give every cell a colour number 0..numColors-1.
+function pixelate() {
+  const [cols, rows] = gridFor(S.cells);
+  const d = Cam.grab(cols, rows, S.mirror);
+  if (!d) return false;
+  if (cols !== w || rows !== h) centers = null;
+  const n = cols * rows, px = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { px[i*3] = d[i*4]; px[i*3+1] = d[i*4+1]; px[i*3+2] = d[i*4+2]; }
+  const res = findColors(px, n, S.numColors, centers);
+  centers = res.centers; groups = res.labels; w = cols; h = rows;
+  palette = vivid(centers, S.colorBoost, S.minSaturation, S.minBrightness);
+  return true;
+}
+
+function randomPicture() {
+  w = S.cells; h = Math.round(w * 0.75);
+  groups = randomLabels(w, h, S.numColors);
+  palette = vivid(RANDOM_CENTERS.map(c => c.slice()), S.colorBoost, S.minSaturation, S.minBrightness);
+}
+
+function put(fill) {
+  if (view.width !== w || view.height !== h) { view.width = w; view.height = h; }
+  const img = vctx.createImageData(w, h);
+  fill(img.data);
+  vctx.putImageData(img, 0, 0);
+  fitView(view, true);
+}
+
+// camera: every cell painted fully in its colour
+function drawCamera() {
+  put(p => {
+    for (let i = 0; i < groups.length; i++) {
+      const c = palette[groups[i]];
+      p[i*4] = c[0]; p[i*4+1] = c[1]; p[i*4+2] = c[2]; p[i*4+3] = 255;
+    }
+  });
+  swatches(palette);
+}
+
+// game: black background, then each colour layer painted translucent on top
+function drawLife() {
+  const op = S.opacity, keep = 1 - op;
+  put(p => {
+    for (let i = 0; i < w * h; i++) {
+      let r = 0, g = 0, b = 0;
+      for (let k = 0; k < layers.length; k++) {
+        if (!layers[k][i]) continue;
+        const c = lifePalette[k];
+        r = r * keep + c[0] * op; g = g * keep + c[1] * op; b = b * keep + c[2] * op;
+      }
+      p[i*4] = r; p[i*4+1] = g; p[i*4+2] = b; p[i*4+3] = 255;
+    }
+  });
+}
+
+function loop(now) {
+  if (mode === "camera") {
+    if (source === "camera" && pixelate()) drawCamera();
+  } else if (now - lastStep >= 1000 / S.speed) {
+    layers = layers.map(a => lifeWrap(a, w, h)); gen++; lastStep = now;
+    drawLife();
+    $("status").textContent = "generation " + gen;
+  }
+  requestAnimationFrame(loop);
+}
+
+function toggle() {
+  if (mode === "camera") {
+    if (!groups) return;
+    layers = [];                                     // one separate Game of Life per colour
+    for (let k = 0; k < S.numColors; k++) {
+      const a = new Uint8Array(w * h);
+      for (let i = 0; i < a.length; i++) a[i] = groups[i] === k ? 1 : 0;
+      layers.push(a);
+    }
+    lifePalette = palette.map(c => c.slice());       // keep the colours of the photo
+    mode = "life"; gen = 0; lastStep = performance.now();
+    drawLife();
+    $("status").textContent = "generation 0"; $("status").style.display = "block";
+    $("btnMain").innerHTML = "Back to camera <kbd>Space</kbd>";
+  } else {
+    mode = "camera";
+    $("status").style.display = "none";
+    $("btnMain").innerHTML = "Take photo &amp; start <kbd>Space</kbd>";
+    if (source === "random") drawCamera();
+  }
+}
+
+$("btnCam").onclick = async () => {
+  $("btnCam").disabled = true; showMsg("Waiting for the camera…");
+  if (await Cam.start()) { source = "camera"; $("btnCam").textContent = "Camera on"; $("btnMain").disabled = false; if (mode !== "camera") toggle(); }
+  else { $("btnCam").disabled = false; showMsg(CAM_FAIL); }
+};
+$("btnRandom").onclick = () => { source = "random"; if (mode !== "camera") toggle(); randomPicture(); drawCamera(); $("btnMain").disabled = false; };
+$("btnMain").onclick = toggle;
+bindRange("setCells", "outCells", v => { S.cells = v; if (source === "random" && mode === "camera") { randomPicture(); drawCamera(); } });
+bindRange("setSpeed", "outSpeed", v => { S.speed = v; });
+bindRange("setOpacity", "outOpacity", v => { S.opacity = v / 100; if (mode === "life") drawLife(); });
+$("setMirror").onchange = e => { S.mirror = e.target.checked; };
+window.addEventListener("resize", () => { if (groups) fitView(view, true); });
+document.addEventListener("keydown", e => {
+  if ((e.key === " " || e.key === "Enter") && groups) { e.preventDefault(); toggle(); }
+  else if (e.key === "Escape" && mode === "life") toggle();
+});
+requestAnimationFrame(loop);
+if (/[?&]demo\b/.test(location.search)) { $("btnRandom").click(); toggle(); }
+
+})();
+</script>
+</body>
+</html>

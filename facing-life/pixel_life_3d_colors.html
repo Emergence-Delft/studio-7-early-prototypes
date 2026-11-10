@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Life 3D – 5 colours</title>
+<!--
+  Pixel Life 3D - 5 colours (browser version of pixel_life_3d_colors.py)
+
+  Based on the idea of https://github.com/pbelmans/conway : every generation of
+  the Game of Life is drawn as a layer of cubes, and the layers stack up on top
+  of each other, so time becomes the height of a 3D tower.
+
+  1. The webcam is shown live, pixelated into 5 colours picked from what the
+     camera sees (made extra vivid).
+  2. Press SPACE / ENTER (or the button): that frame becomes the bottom layer.
+     Each colour is its own Game of Life, and all 5 grow upwards at the same time.
+     Where two colours are alive in the same spot, their cubes sit inside each other.
+     Drag to rotate, scroll to zoom. SPACE pauses / resumes.
+  3. Q / ESC (or the button) goes back to the camera to take another frame.
+
+  No webcam? "Try without camera" starts from a random colour pattern.
+-->
+<style>
+  :root{
+    --bg:#101014; --panel:rgba(22,22,30,.86); --ink:#eef0f8; --ink-2:#a9acc4;
+    --border:#2c2d3d; --accent:#ff5a8a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+  button{font:inherit;color:var(--ink);background:#23243a;border:1px solid var(--border);
+    border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:#4a4c6a}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#14040a;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  kbd{font:12px ui-monospace,Menlo,Consolas,monospace;background:#2a2b40;border:1px solid #3a3c55;
+    border-radius:4px;padding:0 5px}
+  .screen{position:fixed;inset:0;display:none}
+  .screen.on{display:block}
+
+  /* camera screen */
+  #camScreen{display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:20px}
+  #camScreen.on{display:flex}
+  h1{margin:0;font-size:22px;letter-spacing:.2px}
+  .sub{margin:0;color:var(--ink-2);max-width:620px;text-align:center}
+  #previewWrap{position:relative;width:min(92vw,960px);aspect-ratio:4/3;background:#07070a;
+    border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  #preview{width:100%;height:100%;object-fit:contain;image-rendering:pixelated;image-rendering:crisp-edges;display:none}
+  #previewMsg{color:var(--ink-2);text-align:center;padding:20px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:center}
+  .settings{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;color:var(--ink-2);font-size:13px}
+  .settings label{display:flex;gap:8px;align-items:center}
+  .settings input[type=range]{width:120px;accent-color:var(--accent)}
+  .settings output{color:var(--ink);min-width:2.6em;font-variant-numeric:tabular-nums}
+  #swatches{display:flex;gap:6px;height:16px}
+  #swatches span{width:28px;border-radius:4px}
+
+  /* 3D screen */
+  #gl{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+  #gl:active{cursor:grabbing}
+  .hud{position:absolute;background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:10px 12px;backdrop-filter:blur(6px)}
+  #hudTop{top:14px;left:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #gen{color:var(--ink-2);font-variant-numeric:tabular-nums;margin-left:4px}
+  #hudHelp{bottom:14px;left:14px;color:var(--ink-2);font-size:12px}
+  .toggle{display:flex;gap:6px;align-items:center;color:var(--ink-2);font-size:13px;margin-left:6px}
+  .toggle input{accent-color:var(--accent)}
+  #glFail{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--ink-2);padding:20px;text-align:center}
+</style>
+</head>
+<body>
+
+<!-- ================= camera screen ================= -->
+<section id="camScreen" class="screen on">
+  <h1>Pixel Life 3D – 5 colours</h1>
+  <p class="sub">Your webcam, pixelated into 5 vivid colours. Freeze a frame and each colour becomes its own
+    Game of Life, growing upwards as a tower of cubes, where height is time.</p>
+
+  <div id="previewWrap">
+    <canvas id="preview"></canvas>
+    <div id="previewMsg">Click <b>Start camera</b> and allow webcam access,<br>or try it with a random pattern.</div>
+  </div>
+  <div id="swatches"></div>
+
+  <div class="row">
+    <button id="btnCam" class="primary">Start camera</button>
+    <button id="btnRandom">Try without camera</button>
+    <button id="btnGrow" disabled>Grow tower <kbd>Space</kbd></button>
+  </div>
+
+  <div class="settings">
+    <label>Cells across <input id="setCells" type="range" min="32" max="200" step="4" value="96"><output id="outCells">96</output></label>
+    <label>Step (ms) <input id="setStep" type="range" min="20" max="600" step="10" value="120"><output id="outStep">120</output></label>
+    <label>Layers kept <input id="setLayers" type="range" min="20" max="400" step="10" value="150"><output id="outLayers">150</output></label>
+    <label><input id="setMirror" type="checkbox" checked> Mirror</label>
+  </div>
+</section>
+
+<!-- ================= 3D screen ================= -->
+<section id="glScreen" class="screen">
+  <canvas id="gl"></canvas>
+  <div id="hudTop" class="hud">
+    <button id="btnPause">Pause</button>
+    <button id="btnBack">Back to camera</button>
+    <label class="toggle"><input id="setFollow" type="checkbox" checked> Follow</label>
+    <label class="toggle"><input id="setEdges" type="checkbox" checked> Edges</label>
+    <span id="gen">gen 0</span>
+  </div>
+  <div id="hudHelp" class="hud">drag = rotate · scroll = zoom · <kbd>Space</kbd> pause · <kbd>Q</kbd>/<kbd>Esc</kbd> back to camera</div>
+  <div id="glFail">The 3D view could not be loaded (three.js did not download, or WebGL is off).</div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+if (!window.THREE) document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');
+</script>
+<script>
+(function () {
+"use strict";
+
+// ---------------- settings (the same knobs as the Python version) ----------------
+const S = {
+  cells: 96,           // cells across (the Python version uses the camera width / PIXEL_SIZE)
+  mirror: true,        // flip the camera like a mirror
+  stepMs: 120,         // milliseconds between generations
+  maxLayers: 150,      // how many generations stay visible
+  follow: true,        // camera rises with the newest layer
+  numColors: 5,        // how many colours (= how many Games of Life)
+  colorBoost: 2.5,     // saturation multiplier
+  minSaturation: 190,  // 0-255
+  minBrightness: 220,  // 0-255
+  nesting: 0.08,       // each colour's cubes are this much smaller, so overlapping colours nest
+  edges: true,
+  edgeColor: "#202020",
+  background: "#101014",
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ---------------- colour helpers (OpenCV-style 8-bit HSV: hue 0-180) ----------------
+function rgb2hsv(r, g, b) {
+  const v = Math.max(r, g, b), mn = Math.min(r, g, b), d = v - mn;
+  const s = v === 0 ? 0 : (d / v) * 255;
+  let h = 0;
+  if (d > 0) {
+    if (v === r) h = 60 * (g - b) / d;
+    else if (v === g) h = 120 + 60 * (b - r) / d;
+    else h = 240 + 60 * (r - g) / d;
+    if (h < 0) h += 360;
+  }
+  return [Math.round(h / 2) % 180, Math.round(s), v];   // rounded like OpenCV's 8-bit HSV
+}
+function hsv2rgb(h, s, v) {
+  const H = (h * 2) % 360, S1 = s / 255, V = v;
+  const c = V * S1, x = c * (1 - Math.abs(((H / 60) % 2) - 1)), m = V - c;
+  let r = 0, g = 0, b = 0;
+  if (H < 60) [r, g, b] = [c, x, 0];
+  else if (H < 120) [r, g, b] = [x, c, 0];
+  else if (H < 180) [r, g, b] = [0, c, x];
+  else if (H < 240) [r, g, b] = [0, x, c];
+  else if (H < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+// Group the pixels into numColors colour groups (k-means), starting from last
+// frame's colours so they stay steady instead of flickering.
+function findColors(px, n, centers) {
+  const K = S.numColors;
+  const labels = new Uint8Array(n);
+  if (!centers) {
+    const idx = Array.from({ length: n }, (_, i) => i);
+    idx.sort((a, b) => (px[a*3] + px[a*3+1] + px[a*3+2]) - (px[b*3] + px[b*3+1] + px[b*3+2]));
+    centers = [];
+    for (let k = 0; k < K; k++) {
+      const p = idx[Math.floor(k * (n - 1) / (K - 1))];
+      centers.push([px[p*3], px[p*3+1], px[p*3+2]]);
+    }
+  }
+  const sum = new Float64Array(K * 3), cnt = new Uint32Array(K);
+  for (let it = 0; it < 4; it++) {
+    sum.fill(0); cnt.fill(0);
+    for (let i = 0; i < n; i++) {
+      const r = px[i*3], g = px[i*3+1], b = px[i*3+2];
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < K; k++) {
+        const c = centers[k], dr = r - c[0], dg = g - c[1], db = b - c[2];
+        const d = dr*dr + dg*dg + db*db;
+        if (d < bd) { bd = d; best = k; }
+      }
+      labels[i] = best; cnt[best]++;
+      sum[best*3] += r; sum[best*3+1] += g; sum[best*3+2] += b;
+    }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k]) centers[k] = [sum[k*3] / cnt[k], sum[k*3+1] / cnt[k], sum[k*3+2] / cnt[k]];
+      else { const p = (Math.random() * n) | 0; centers[k] = [px[p*3], px[p*3+1], px[p*3+2]]; }
+    }
+  }
+  return { labels, centers };
+}
+
+// Turn the camera's colours into bright, saturated versions of themselves.
+// Greyish colours have no real hue, so they get a hue far from the other colours.
+function vivid(centers) {
+  const hsv = centers.map(c => rgb2hsv(...c.map(v => Math.floor(Math.min(255, Math.max(0, v))))));
+  const rawSat = hsv.map(h => h[1]);
+  const grey = rawSat.map(s => s < 45);
+  const taken = hsv.filter((_, i) => !grey[i]).map(h => h[0]);
+  const greys = hsv.map((_, i) => i).filter(i => grey[i]).sort((a, b) => hsv[a][2] - hsv[b][2]);
+  for (const i of greys) {
+    let hue;
+    if (taken.length) {
+      let bestGap = -1;
+      for (let c = 0; c < 180; c += 6) {
+        let gap = Infinity;
+        for (const t of taken) gap = Math.min(gap, Math.abs((((c - t) + 90) % 180 + 180) % 180 - 90));
+        if (gap > bestGap) { bestGap = gap; hue = c; }
+      }
+    } else hue = 120 + 25 * i;
+    hsv[i][0] = hue % 180;
+    taken.push(hsv[i][0]);
+  }
+  return hsv.map((h, i) => hsv2rgb(
+    Math.floor(h[0]),
+    Math.floor(Math.min(255, Math.max(rawSat[i] * S.colorBoost, S.minSaturation))),
+    Math.floor(Math.min(255, Math.max(h[2] * 1.3, S.minBrightness)))
+  ).map(Math.round));
+}
+
+// ---------------- camera screen ----------------
+const video = document.createElement("video");
+video.muted = true; video.playsInline = true;
+const small = document.createElement("canvas");
+const sctx = small.getContext("2d", { willReadFrequently: true });
+const preview = $("preview"), pctx = preview.getContext("2d");
+let stream = null, centers = null, current = null;   // current = {labels, palette, cols, rows}
+let previewOn = false;
+
+function gridSize() {
+  const vw = video.videoWidth || 4, vh = video.videoHeight || 3;
+  const cols = S.cells, rows = Math.max(8, Math.round(cols * vh / vw));
+  return [cols, rows];
+}
+
+function drawPreview(g) {
+  if (preview.width !== g.cols || preview.height !== g.rows) { preview.width = g.cols; preview.height = g.rows; }
+  const img = pctx.createImageData(g.cols, g.rows);
+  for (let i = 0; i < g.labels.length; i++) {
+    const c = g.palette[g.labels[i]];
+    img.data[i*4] = c[0]; img.data[i*4+1] = c[1]; img.data[i*4+2] = c[2]; img.data[i*4+3] = 255;
+  }
+  pctx.putImageData(img, 0, 0);
+  preview.style.display = "block";
+  $("previewMsg").style.display = "none";
+  $("swatches").innerHTML = g.palette.map(c => `<span style="background:rgb(${c})"></span>`).join("");
+  $("btnGrow").disabled = false;
+}
+
+function cameraLoop() {
+  if (!previewOn || !stream) return;
+  if (video.readyState >= 2) {
+    const [cols, rows] = gridSize();
+    if (small.width !== cols || small.height !== rows) { small.width = cols; small.height = rows; centers = null; }
+    sctx.imageSmoothingEnabled = true; sctx.imageSmoothingQuality = "high";
+    sctx.save();
+    if (S.mirror) { sctx.translate(cols, 0); sctx.scale(-1, 1); }
+    sctx.drawImage(video, 0, 0, cols, rows);
+    sctx.restore();
+    const d = sctx.getImageData(0, 0, cols, rows).data, n = cols * rows;
+    const px = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { px[i*3] = d[i*4]; px[i*3+1] = d[i*4+1]; px[i*3+2] = d[i*4+2]; }
+    const res = findColors(px, n, centers);
+    centers = res.centers;
+    current = { labels: res.labels, palette: vivid(centers), cols, rows };
+    drawPreview(current);
+  }
+  requestAnimationFrame(cameraLoop);
+}
+
+async function startCamera() {
+  if (stream) return;
+  $("btnCam").disabled = true;
+  $("previewMsg").textContent = "Waiting for the camera…";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    $("btnCam").textContent = "Camera on";
+    previewOn = true; cameraLoop();
+  } catch (e) {
+    stream = null;
+    $("btnCam").disabled = false;
+    $("previewMsg").innerHTML = "Could not get a picture from a webcam.<br>Allow camera access in the browser, close other apps that use the camera, or try it without a camera.";
+    $("previewMsg").style.display = "block"; preview.style.display = "none";
+  }
+}
+
+function randomPattern() {
+  previewOn = false;
+  const cols = S.cells, rows = Math.round(cols * 3 / 4), K = S.numColors;
+  // a few soft colour blobs plus some noise, so every colour has edges to grow from
+  const blobs = Array.from({ length: 14 }, () => [Math.random() * cols, Math.random() * rows, (0.08 + Math.random() * 0.18) * cols, (Math.random() * K) | 0]);
+  const labels = new Uint8Array(cols * rows);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    let best = (Math.random() * K) | 0, bd = Infinity;
+    for (const [bx, by, br, k] of blobs) { const d = Math.hypot(x - bx, y - by) / br; if (d < bd) { bd = d; best = k; } }
+    labels[y * cols + x] = Math.random() < 0.25 ? (Math.random() * K) | 0 : best;
+  }
+  const palette = vivid([[230, 60, 60], [60, 200, 90], [70, 110, 240], [240, 200, 50], [200, 200, 200]]);
+  current = { labels, palette, cols, rows };
+  drawPreview(current);
+}
+
+// ---------------- game of life ----------------
+// One generation of Conway's Game of Life. Cells outside the grid count as dead.
+function lifeStep(a, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = y > 0, y1 = y < h - 1;
+    for (let x = 0; x < w; x++) {
+      const x0 = x > 0, x1 = x < w - 1, i = y * w + x;
+      let n = 0;
+      if (y0) { if (x0) n += a[i-w-1]; n += a[i-w]; if (x1) n += a[i-w+1]; }
+      if (x0) n += a[i-1];
+      if (x1) n += a[i+1];
+      if (y1) { if (x0) n += a[i+w-1]; n += a[i+w]; if (x1) n += a[i+w+1]; }
+      out[i] = (n === 3 || (a[i] && n === 2)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// ---------------- 3D ----------------
+let renderer = null, scene, cam, cubeGeo, cubeMat;
+const orbit = { target: null, r: 1, theta: 0, phi: 1 };
+let sim = null;      // {alive[], palette, w, h, gen, layers[], paused, last}
+let glOn = false;
+
+function initGL() {
+  if (renderer) return true;
+  if (!window.THREE) return false;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: $("gl"), antialias: true });
+  } catch (e) { return false; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(S.background);
+  cam = new THREE.PerspectiveCamera(40, 1, 0.1, 10000);
+  orbit.target = new THREE.Vector3();
+  cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+  // Flat-shaded cubes with thin, screen-space outlines drawn in the shader
+  cubeMat = new THREE.ShaderMaterial({
+    extensions: { derivatives: true },
+    uniforms: { uEdges: { value: 1 }, uEdgeColor: { value: new THREE.Color(S.edgeColor) } },
+    vertexShader: `
+      varying vec3 vP; varying vec3 vN; varying vec3 vC;
+      void main() {
+        vP = position; vN = normal;
+        #ifdef USE_INSTANCING_COLOR
+          vC = instanceColor;
+        #else
+          vC = vec3(1.0);
+        #endif
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform float uEdges; uniform vec3 uEdgeColor;
+      varying vec3 vP; varying vec3 vN; varying vec3 vC;
+      void main() {
+        vec3 n = normalize(vN);
+        float lit = 0.58 + 0.30 * max(dot(n, normalize(vec3(0.45, 0.9, 0.6))), 0.0)
+                         + 0.12 * max(dot(n, normalize(vec3(-0.6, 0.2, -0.4))), 0.0);
+        vec3 col = vC * lit;
+        if (uEdges > 0.5) {
+          vec3 dist = (0.5 - abs(vP)) / max(fwidth(vP), vec3(1e-5));   // distance to each face edge, in pixels
+          float mid = max(min(dist.x, dist.y), min(max(dist.x, dist.y), dist.z));
+          col = mix(col, uEdgeColor, 1.0 - smoothstep(0.4, 1.4, mid));
+        }
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  addOrbitControls($("gl"));
+  window.addEventListener("resize", resize);
+  return true;
+}
+
+function resize() {
+  if (!renderer) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  cam.aspect = w / h; cam.updateProjectionMatrix();
+}
+
+function placeCamera() {
+  const t = orbit.target, r = orbit.r, sp = Math.sin(orbit.phi);
+  cam.position.set(t.x + r * sp * Math.sin(orbit.theta), t.y + r * Math.cos(orbit.phi), t.z + r * sp * Math.cos(orbit.theta));
+  cam.lookAt(t);
+}
+
+function addOrbitControls(el) {
+  let drag = null;
+  el.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY }; el.setPointerCapture(e.pointerId); });
+  el.addEventListener("pointermove", e => {
+    if (!drag) return;
+    orbit.theta -= (e.clientX - drag.x) * 0.006;
+    orbit.phi = Math.min(Math.PI - 0.05, Math.max(0.05, orbit.phi - (e.clientY - drag.y) * 0.006));
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  el.addEventListener("pointerup", () => { drag = null; });
+  el.addEventListener("pointercancel", () => { drag = null; });
+  el.addEventListener("wheel", e => {
+    e.preventDefault();
+    orbit.r = Math.min(5000, Math.max(5, orbit.r * Math.exp(e.deltaY * 0.0012)));
+  }, { passive: false });
+}
+
+// All living cells of all colours of one generation, as one instanced mesh.
+let M4 = null, COL = null;                         // created once three.js is loaded
+
+function layerMesh(alive, palette, w, h, y) {
+  let count = 0;
+  for (const a of alive) for (let i = 0; i < a.length; i++) count += a[i];
+  if (!count) return null;
+  const mesh = new THREE.InstancedMesh(cubeGeo, cubeMat, count);
+  let j = 0;
+  alive.forEach((a, k) => {
+    const s = 1 - S.nesting * k, c = palette[k];
+    COL.setRGB(c[0] / 255, c[1] / 255, c[2] / 255);
+    for (let i = 0; i < a.length; i++) {
+      if (!a[i]) continue;
+      const col = i % w, row = (i / w) | 0;
+      M4.makeScale(s, s, s).setPosition(col - w / 2 + 0.5, y, row - h / 2 + 0.5);
+      mesh.setMatrixAt(j, M4);
+      mesh.setColorAt(j, COL);
+      j++;
+    }
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+function addLayer() {
+  const mesh = layerMesh(sim.alive, sim.palette, sim.w, sim.h, sim.gen);
+  if (mesh) scene.add(mesh);
+  sim.layers.push(mesh);
+  while (sim.layers.length > S.maxLayers) {           // drop the oldest layer
+    const old = sim.layers.shift();
+    if (old) { scene.remove(old); old.dispose(); }
+  }
+}
+
+function tick() {
+  sim.alive = sim.alive.map(a => lifeStep(a, sim.w, sim.h));
+  sim.gen++;
+  addLayer();
+  if (S.follow) orbit.target.y += 1;                  // camera rises with the newest layer
+  $("gen").textContent = "gen " + sim.gen;
+}
+
+function glLoop(now) {
+  if (!glOn) return;
+  if (!sim.paused && now - sim.last >= S.stepMs) { tick(); sim.last = now; }
+  placeCamera();
+  renderer.render(scene, cam);
+  requestAnimationFrame(glLoop);
+}
+
+function startTower() {
+  if (!current) return;
+  if (!initGL()) {
+    $("camScreen").classList.remove("on"); $("glScreen").classList.add("on");
+    $("glFail").style.display = "flex"; return;
+  }
+  if (!M4) { M4 = new THREE.Matrix4(); COL = new THREE.Color(); }
+  previewOn = false;
+  clearTower();
+  const { labels, palette, cols: w, rows: h } = current;
+  const alive = [];
+  for (let k = 0; k < S.numColors; k++) {             // one game per colour
+    const a = new Uint8Array(w * h);
+    for (let i = 0; i < labels.length; i++) a[i] = labels[i] === k ? 1 : 0;
+    alive.push(a);
+  }
+  sim = { alive, palette, w, h, gen: 0, layers: [], paused: false, last: performance.now() };
+  cubeMat.uniforms.uEdges.value = S.edges ? 1 : 0;
+  addLayer();                                          // generation 0 = the photo
+
+  // starting view: from the side and a bit above, like looking at a growing tower
+  const size = Math.max(w, h), p = new THREE.Vector3(0.9 * size, 0.9 * size, 1.4 * size);
+  orbit.target.set(0, 0, 0);
+  orbit.r = p.length(); orbit.theta = Math.atan2(p.x, p.z); orbit.phi = Math.acos(p.y / orbit.r);
+
+  $("camScreen").classList.remove("on"); $("glScreen").classList.add("on");
+  $("btnPause").textContent = "Pause"; $("gen").textContent = "gen 0";
+  resize();
+  glOn = true; requestAnimationFrame(glLoop);
+}
+
+function clearTower() {
+  if (!sim) return;
+  for (const m of sim.layers) if (m) { scene.remove(m); m.dispose(); }
+  sim = null;
+}
+
+function backToCamera() {
+  glOn = false;
+  clearTower();
+  $("glScreen").classList.remove("on"); $("camScreen").classList.add("on");
+  $("glFail").style.display = "none";
+  if (stream) { previewOn = true; cameraLoop(); }
+}
+
+function togglePause() {
+  if (!sim) return;
+  sim.paused = !sim.paused;
+  $("btnPause").textContent = sim.paused ? "Resume" : "Pause";
+}
+
+// ---------------- wiring ----------------
+$("btnCam").onclick = startCamera;
+$("btnRandom").onclick = randomPattern;
+$("btnGrow").onclick = startTower;
+$("btnPause").onclick = togglePause;
+$("btnBack").onclick = backToCamera;
+$("setFollow").onchange = e => { S.follow = e.target.checked; };
+$("setEdges").onchange = e => { S.edges = e.target.checked; if (cubeMat) cubeMat.uniforms.uEdges.value = S.edges ? 1 : 0; };
+$("setMirror").onchange = e => { S.mirror = e.target.checked; };
+function bindRange(id, out, key) {
+  const el = $(id);
+  el.oninput = () => { S[key] = +el.value; $(out).textContent = el.value; if (key === "cells" && !stream && current) randomPattern(); };
+}
+bindRange("setCells", "outCells", "cells");
+bindRange("setStep", "outStep", "stepMs");
+bindRange("setLayers", "outLayers", "maxLayers");
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type === "range" && e.key !== " " && e.key !== "Enter") return;
+  if (glOn) {
+    if (e.key === " ") { e.preventDefault(); togglePause(); }
+    else if (e.key === "q" || e.key === "Q" || e.key === "Escape") backToCamera();
+  } else if ((e.key === " " || e.key === "Enter") && current) {
+    e.preventDefault(); startTower();
+  }
+});
+
+// for automated testing: ?demo starts the tower from a random pattern
+if (/[?&]demo\b/.test(location.search)) { randomPattern(); startTower(); }
+})();
+</script>
+</body>
+</html>

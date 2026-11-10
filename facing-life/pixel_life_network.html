@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Life – network</title>
+<!--
+  Pixel Life - network (browser version of pixel_life_network.py)
+
+  Soft grainy glows on warm paper, with black nodes joined by thin lines into a
+  growing network. Every line always runs between two nodes: nothing trails off.
+
+  1. The webcam is shown in this style: the picture is split into its 5 main
+     colours (picked from what the camera sees). Every patch of one colour is a
+     glowing node.
+  2. Press SPACE / ENTER: the frame freezes and each colour becomes its own
+     Game of Life, and the network starts growing:
+     - every new cluster of living cells sprouts a new node, connected by a line
+       that grows out of the nearest existing node
+     - a cluster that travels (like a glider) lays down a chain of nodes
+     - old nodes eventually fade away together with all their lines
+  3. Press SPACE / ENTER again to go back to the camera.
+
+  No webcam? "Try without camera" starts from a random colour picture.
+-->
+<style>
+  :root{
+    --bg:#101014; --panel:#16161e; --ink:#eef0f8; --ink-2:#a9acc4;
+    --border:#2c2d3d; --accent:#ff5a8a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body{display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 16px 22px}
+  h1{margin:0;font-size:22px;letter-spacing:.2px}
+  .sub{margin:0;color:var(--ink-2);max-width:640px;text-align:center}
+  button{font:inherit;color:var(--ink);background:#23243a;border:1px solid var(--border);
+    border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:#4a4c6a}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#14040a;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  kbd{font:12px ui-monospace,Menlo,Consolas,monospace;background:#2a2b40;border:1px solid #3a3c55;border-radius:4px;padding:0 5px}
+  #stage{position:relative;width:min(94vw,1100px);height:calc(100vh - 250px);min-height:240px;
+    display:flex;align-items:center;justify-content:center;background:#07070a;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  #view{display:none}
+  #view.pixelated{image-rendering:pixelated;image-rendering:crisp-edges}
+  #msg{color:var(--ink-2);text-align:center;padding:20px}
+  #status{position:absolute;top:10px;left:12px;font-size:12px;color:var(--ink-2);background:rgba(16,16,20,.75);
+    border-radius:6px;padding:2px 8px;font-variant-numeric:tabular-nums;display:none}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:center}
+  .settings{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;color:var(--ink-2);font-size:13px}
+  .settings label{display:flex;gap:8px;align-items:center}
+  .settings input[type=range]{width:120px;accent-color:var(--accent)}
+  .settings input[type=checkbox]{accent-color:var(--accent)}
+  .settings output{color:var(--ink);min-width:2.6em;font-variant-numeric:tabular-nums}
+  #swatches{display:flex;gap:6px;height:14px}
+  #swatches span{width:28px;border-radius:4px}
+  #stage{background:#e6e3da}
+</style>
+</head>
+<body>
+<h1>Pixel Life – network</h1>
+<p class="sub">Glowing colour patches on warm paper. Freeze a frame and each colour becomes its own Game of Life, growing a network of nodes and lines.</p>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="msg">Click <b>Start camera</b> and allow webcam access,<br>or try it with a random picture.</div>
+  <div id="status"></div>
+</div>
+<div id="swatches"></div>
+<div class="row">
+  <button id="btnCam" class="primary">Start camera</button>
+  <button id="btnRandom">Try without camera</button>
+  <button id="btnMain" disabled>Freeze &amp; grow <kbd>Space</kbd></button>
+</div>
+<div class="settings">
+  <label>Cells across <input id="setCells" type="range" min="48" max="200" step="4" value="128"><output id="outCells">128</output></label>
+  <label>Generations / s <input id="setSpeed" type="range" min="1" max="30" step="1" value="6"><output id="outSpeed">6</output></label>
+  <label><input id="setMirror" type="checkbox"> Mirror</label>
+</div>
+<script>
+(function () {
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---------------- colour helpers (OpenCV-style 8-bit HSV: hue 0-180) ----------------
+function rgb2hsv(r, g, b) {
+  const v = Math.max(r, g, b), mn = Math.min(r, g, b), d = v - mn;
+  const s = v === 0 ? 0 : (d / v) * 255;
+  let h = 0;
+  if (d > 0) {
+    if (v === r) h = 60 * (g - b) / d;
+    else if (v === g) h = 120 + 60 * (b - r) / d;
+    else h = 240 + 60 * (r - g) / d;
+    if (h < 0) h += 360;
+  }
+  return [Math.round(h / 2) % 180, Math.round(s), v];   // rounded like OpenCV's 8-bit HSV
+}
+function hsv2rgb(h, s, v) {
+  const H = (h * 2) % 360, c = v * (s / 255), x = c * (1 - Math.abs(((H / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (H < 60) [r, g, b] = [c, x, 0];
+  else if (H < 120) [r, g, b] = [x, c, 0];
+  else if (H < 180) [r, g, b] = [0, c, x];
+  else if (H < 240) [r, g, b] = [0, x, c];
+  else if (H < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+// Group the pixels into K colour groups (k-means), starting from last
+// frame's colours so they stay steady instead of flickering.
+function findColors(px, n, K, centers) {
+  const labels = new Uint8Array(n);
+  if (!centers) {                       // first frame: spread the starting colours from dark to bright
+    const idx = Array.from({ length: n }, (_, i) => i);
+    idx.sort((a, b) => (px[a*3] + px[a*3+1] + px[a*3+2]) - (px[b*3] + px[b*3+1] + px[b*3+2]));
+    centers = [];
+    for (let k = 0; k < K; k++) {
+      const p = idx[Math.floor(k * (n - 1) / (K - 1))];
+      centers.push([px[p*3], px[p*3+1], px[p*3+2]]);
+    }
+  }
+  const sum = new Float64Array(K * 3), cnt = new Uint32Array(K);
+  for (let it = 0; it < 4; it++) {
+    sum.fill(0); cnt.fill(0);
+    for (let i = 0; i < n; i++) {
+      const r = px[i*3], g = px[i*3+1], b = px[i*3+2];
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < K; k++) {
+        const c = centers[k], dr = r - c[0], dg = g - c[1], db = b - c[2];
+        const d = dr*dr + dg*dg + db*db;
+        if (d < bd) { bd = d; best = k; }
+      }
+      labels[i] = best; cnt[best]++;
+      sum[best*3] += r; sum[best*3+1] += g; sum[best*3+2] += b;
+    }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k]) centers[k] = [sum[k*3] / cnt[k], sum[k*3+1] / cnt[k], sum[k*3+2] / cnt[k]];
+      else { const p = (Math.random() * n) | 0; centers[k] = [px[p*3], px[p*3+1], px[p*3+2]]; }   // unused colour: jump to a random pixel
+    }
+  }
+  return { labels, centers };
+}
+
+// Turn the camera's colours into bright, saturated versions of themselves.
+// Greyish colours (white wall, black hair...) have no real hue, so they get
+// a hue far away from the other colours, to keep everything colourful.
+function vivid(centers, boost, minSat, minBright) {
+  const hsv = centers.map(c => rgb2hsv(...c.map(v => Math.floor(Math.min(255, Math.max(0, v))))));
+  const rawSat = hsv.map(h => h[1]);
+  const grey = rawSat.map(s => s < 45);
+  const taken = hsv.filter((_, i) => !grey[i]).map(h => h[0]);
+  const greys = hsv.map((_, i) => i).filter(i => grey[i]).sort((a, b) => hsv[a][2] - hsv[b][2]);
+  for (const i of greys) {
+    let hue;
+    if (taken.length) {
+      let bestGap = -1;
+      for (let c = 0; c < 180; c += 6) {
+        let gap = Infinity;
+        for (const t of taken) gap = Math.min(gap, Math.abs((((c - t) + 90) % 180 + 180) % 180 - 90));
+        if (gap > bestGap) { bestGap = gap; hue = c; }
+      }
+    } else hue = 120 + 25 * i;          // nothing to avoid: start from blue/purple
+    hsv[i][0] = hue % 180;
+    taken.push(hsv[i][0]);
+  }
+  return hsv.map((h, i) => hsv2rgb(
+    Math.floor(h[0]),
+    Math.floor(Math.min(255, Math.max(rawSat[i] * boost, minSat))),
+    Math.floor(Math.min(255, Math.max(h[2] * 1.3, minBright)))
+  ).map(Math.round));
+}
+
+// ---------------- camera ----------------
+const Cam = {
+  video: null, stream: null, canvas: document.createElement("canvas"), ctx: null,
+  async start() {
+    if (this.stream) return true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      this.video = document.createElement("video");
+      this.video.muted = true; this.video.playsInline = true;
+      this.video.srcObject = this.stream;
+      await this.video.play();
+      return true;
+    } catch (e) { this.stream = null; return false; }
+  },
+  ready() { return !!(this.stream && this.video && this.video.readyState >= 2 && this.video.videoWidth); },
+  aspect() { return this.ready() ? this.video.videoHeight / this.video.videoWidth : 0.75; },
+  // the camera frame shrunk to cols x rows (area-averaged), as RGBA bytes
+  grab(cols, rows, mirror) {
+    if (!this.ready()) return null;
+    const c = this.canvas;
+    if (c.width !== cols || c.height !== rows) { c.width = cols; c.height = rows; this.ctx = null; }
+    if (!this.ctx) this.ctx = c.getContext("2d", { willReadFrequently: true });
+    const x = this.ctx;
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.save();
+    if (mirror) { x.translate(cols, 0); x.scale(-1, 1); }
+    x.drawImage(this.video, 0, 0, cols, rows);
+    x.restore();
+    return x.getImageData(0, 0, cols, rows).data;
+  },
+};
+const CAM_FAIL = "Could not get a picture from a webcam.<br>Allow camera access in the browser, close other apps that use the camera, or try it without a camera.";
+
+function gridFor(cols) { return [cols, Math.max(8, Math.round(cols * Cam.aspect()))]; }
+
+// ---------------- game of life ----------------
+// One generation of Conway's Game of Life on a wrapping grid (edges join up).
+function lifeWrap(a, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const up = ((y + h - 1) % h) * w, me = y * w, dn = ((y + 1) % h) * w;
+    for (let x = 0; x < w; x++) {
+      const l = (x + w - 1) % w, r = (x + 1) % w;
+      const n = a[up+l] + a[up+x] + a[up+r] + a[me+l] + a[me+r] + a[dn+l] + a[dn+x] + a[dn+r];
+      out[me + x] = (n === 3 || (a[me + x] && n === 2)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+// One generation where cells outside the grid count as dead.
+function lifeDead(a, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = y > 0, y1 = y < h - 1;
+    for (let x = 0; x < w; x++) {
+      const x0 = x > 0, x1 = x < w - 1, i = y * w + x;
+      let n = 0;
+      if (y0) { if (x0) n += a[i-w-1]; n += a[i-w]; if (x1) n += a[i-w+1]; }
+      if (x0) n += a[i-1];
+      if (x1) n += a[i+1];
+      if (y1) { if (x0) n += a[i+w-1]; n += a[i+w]; if (x1) n += a[i+w+1]; }
+      out[i] = (n === 3 || (a[i] && n === 2)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// a random picture of soft colour blobs plus some noise, for trying it without a camera
+function randomLabels(cols, rows, K) {
+  const blobs = Array.from({ length: 14 }, () => [Math.random() * cols, Math.random() * rows, (0.08 + Math.random() * 0.18) * cols, (Math.random() * K) | 0]);
+  const labels = new Uint8Array(cols * rows);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    let best = 0, bd = Infinity;
+    for (const [bx, by, br, k] of blobs) { const d = Math.hypot(x - bx, y - by) / br; if (d < bd) { bd = d; best = k; } }
+    labels[y * cols + x] = Math.random() < 0.25 ? (Math.random() * K) | 0 : best;
+  }
+  return labels;
+}
+const RANDOM_CENTERS = [[230, 60, 60], [60, 200, 90], [70, 110, 240], [240, 200, 50], [200, 200, 200]];
+
+// fit the view canvas into the stage (integer zoom for pixel grids, like the Python windows)
+function fitView(canvas, integer) {
+  const st = $("stage"), aw = st.clientWidth - 16, ah = st.clientHeight - 16;
+  let s = Math.min(aw / canvas.width, ah / canvas.height);
+  if (integer && s >= 1) s = Math.floor(s);
+  canvas.style.width = Math.round(canvas.width * s) + "px";
+  canvas.style.height = Math.round(canvas.height * s) + "px";
+  canvas.style.display = "block";
+  $("msg").style.display = "none";
+}
+function showMsg(html) { $("msg").innerHTML = html; $("msg").style.display = "block"; $("view").style.display = "none"; }
+function swatches(palette) { $("swatches").innerHTML = palette.map(c => `<span style="background:rgb(${c})"></span>`).join(""); }
+function bindRange(id, out, set) {
+  const el = $(id);
+  const f = () => { $(out).textContent = el.value; set(+el.value); };
+  el.addEventListener("input", f);
+}
+
+// ---------------- settings (the same knobs as the Python version) ----------------
+const S = {
+  cells: 128,          // cells across (PIXEL_SIZE = 5 on a 640-wide webcam)
+  speed: 6,            // game generations per second
+  mirror: false,       // flip the camera like a mirror
+  numColors: 5,        // how many colours (= how many Games of Life)
+  colorBoost: 2.0,     // saturation multiplier for the camera colours
+  minSaturation: 170,  // 0-255
+  minBrightness: 215,  // 0-255
+};
+const N = {
+  WIDTH: 1000,              // width of the picture in pixels
+  PAPER: [230, 227, 218],   // warm off-white background
+  GLOW_SIZE: 1.6,           // how soft the glows are (in cells)
+  HALO_SIZE: 2.6,           // size of the glow around each node, relative to the node
+  MIN_HALO: 1.6,            // smallest glow around a node (in cells)
+  GLOW_OPACITY: 0.65,       // 0-1: how strong the glows are
+  GRAIN: 0.55,              // 0-1: how grainy / speckled the glows are
+  DOT: [20, 20, 22],        // colour of the nodes
+  DOT_SIZE: 0.55,           // node radius per cluster size
+  MAX_DOT: 26,              // largest node radius in pixels
+  MIN_DOT: 2.2,             // smallest node radius in pixels
+  LINK_DIST: 8,             // a new node connects to existing nodes up to this far away (in cells)
+  EXTRA_LINK: 0.35,         // 0-1: chance a new node also links to a second neighbour
+  CHAIN_SPACING: 4.0,       // a travelling cluster drops a new node every this many cells
+  GROW_TIME: 0.6,           // seconds a new line takes to grow out to its node
+  CURVE: 0.18,              // how curved the lines are (0 = straight)
+  NODE_LIFE: 10,            // seconds a node stays after its cluster is gone
+  FADE_TIME: 3,             // seconds a node (and its lines) takes to fade out
+  MAX_NODES: 220,           // when there are more nodes than this, the oldest fade out early
+  SETTLE: 2,                // a new cluster must survive this many generations before it gets a node
+  LINE_OPACITY: 0.75,       // 0-1: how dark the lines are
+  LINE_DARKNESS: 0.5,       // 0 = black lines, 1 = lines in the full colour of their node
+  MATCH_DIST: 3.0,          // how far (in cells) a cluster may move and still be "the same" cluster
+  GLOW_RES: 4,              // glow resolution per cell
+};
+
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// Groups of touching living cells (8-connected): [centre_row, centre_col, number_of_cells]
+function clusters(alive, w, h) {
+  const seen = new Uint8Array(w * h), stack = new Int32Array(w * h), out = [];
+  for (let s = 0; s < alive.length; s++) {
+    if (!alive[s] || seen[s]) continue;
+    let top = 0, n = 0, sr = 0, sc = 0;
+    stack[top++] = s; seen[s] = 1;
+    while (top) {
+      const i = stack[--top], r = (i / w) | 0, c = i - r * w;
+      n++; sr += r; sc += c;
+      for (let dy = -1; dy <= 1; dy++) {
+        const rr = r + dy; if (rr < 0 || rr >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const cc = c + dx; if (cc < 0 || cc >= w) continue;
+          const j = rr * w + cc;
+          if (alive[j] && !seen[j]) { seen[j] = 1; stack[top++] = j; }
+        }
+      }
+    }
+    out.push([sr / n, sc / n, n]);
+  }
+  return out;
+}
+
+// three box blurs in a row ≈ a gaussian blur
+function boxBlur(src, tmp, w, h, r) {
+  const k = 1 / (2 * r + 1);
+  for (let pass = 0; pass < 3; pass++) {
+    for (let y = 0; y < h; y++) {                       // horizontal: src -> tmp
+      const o = y * w; let sum = src[o] * (r + 1);
+      for (let x = 1; x <= r; x++) sum += src[o + Math.min(x, w - 1)];
+      for (let x = 0; x < w; x++) {
+        tmp[o + x] = sum * k;
+        sum += src[o + Math.min(x + r + 1, w - 1)] - src[o + Math.max(x - r, 0)];
+      }
+    }
+    for (let x = 0; x < w; x++) {                       // vertical: tmp -> src
+      let sum = tmp[x] * (r + 1);
+      for (let y = 1; y <= r; y++) sum += tmp[Math.min(y, h - 1) * w + x];
+      for (let y = 0; y < h; y++) {
+        src[y * w + x] = sum * k;
+        sum += tmp[Math.min(y + r + 1, h - 1) * w + x] - tmp[Math.max(y - r, 0) * w + x];
+      }
+    }
+  }
+}
+
+function canvas2d(w, h) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  return [c, c.getContext("2d", { willReadFrequently: true })];
+}
+
+// ---------------- the network ----------------
+class Network {
+  constructor(rows, cols) {
+    this.rows = rows; this.cols = cols;
+    this.W = N.WIDTH; this.H = Math.floor(N.WIDTH * rows / cols);
+    this.sx = this.W / cols; this.sy = this.H / rows;
+    const P = this.W * this.H;
+    this.grains = [0, 1, 2, 3].map(() => {
+      const g = new Float32Array(P);
+      for (let i = 0; i < P; i++) g[i] = Math.min(2, Math.max(0, 1 + N.GRAIN * 2 * (Math.random() - 0.5)));
+      return g;
+    });
+    this.frameNo = 0;
+    this.gw = cols * N.GLOW_RES; this.gh = rows * N.GLOW_RES;
+    const G = this.gw * this.gh;
+    this.halos = Array.from({ length: S.numColors }, () => new Float32Array(G));
+    this.tmp = new Float32Array(G); this.A = new Float32Array(G); this.C = new Float32Array(G * 3);
+    [this.lowC, this.lowCx] = canvas2d(this.gw, this.gh);
+    [this.lowA, this.lowAx] = canvas2d(this.gw, this.gh);
+    [, this.fullCx] = canvas2d(this.W, this.H);
+    [, this.fullAx] = canvas2d(this.W, this.H);
+    this.lowCimg = new ImageData(this.gw, this.gh); this.lowAimg = new ImageData(this.gw, this.gh);
+    this.out = new ImageData(this.W, this.H);
+    this.reset();
+  }
+
+  reset() {
+    this.nodes = new Map();   // id -> {x, y, r, tr, color, seen, born, fade}
+    this.edges = [];          // {a, b, born, bend}
+    this.heads = [];          // clusters being followed: {color, row, col, node, age}
+    this.nextId = 0;
+  }
+
+  toScreen(row, col) { return [(col + 0.5) * this.sx, (row + 0.5) * this.sy]; }
+  dotRadius(cells) { return Math.min(N.MAX_DOT, Math.max(N.MIN_DOT, 1.5 + N.DOT_SIZE * Math.sqrt(cells) * this.sx / 10)); }
+
+  // --- building the network ---
+  addNode(x, y, r, color, now) {
+    const id = this.nextId++;
+    this.nodes.set(id, { x, y, r: r * 0.3, tr: r, color, seen: now, born: now, fade: null });
+    return id;
+  }
+  addEdge(a, b, now) { this.edges.push({ a, b, born: now, bend: rand(-N.CURVE, N.CURVE) }); }
+
+  // up to `count` nearest visible nodes within LINK_DIST
+  nearest(x, y, exclude, count) {
+    const best = [], maxD = N.LINK_DIST * this.sx;
+    for (const [id, n] of this.nodes) {
+      if (exclude.has(id) || n.fade !== null) continue;
+      const d = Math.hypot(n.x - x, n.y - y);
+      if (d < maxD) best.push([d, id]);
+    }
+    best.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    return best.slice(0, count).map(p => p[1]);
+  }
+
+  // new node, connected by growing lines to its nearest neighbour(s)
+  sprout(x, y, r, color, now) {
+    const links = this.nearest(x, y, new Set(), 2);
+    const id = this.addNode(x, y, r, color, now);
+    if (links.length) {
+      this.addEdge(links[0], id, now);
+      if (links.length > 1 && Math.random() < N.EXTRA_LINK) this.addEdge(links[1], id, now);
+    }
+    return id;
+  }
+
+  // frozen frame: one node per cluster, each joined to its nearest neighbour
+  start(layers, now) {
+    this.reset();
+    layers.forEach((alive, c) => {
+      for (const [row, col, cells] of clusters(alive, this.cols, this.rows)) {
+        const [x, y] = this.toScreen(row, col);
+        const id = this.addNode(x, y, this.dotRadius(cells), c, now);
+        this.nodes.get(id).r = this.nodes.get(id).tr;
+        this.heads.push({ color: c, row, col, node: id, age: N.SETTLE });
+      }
+    });
+    for (const id of [...this.nodes.keys()]) {
+      const n = this.nodes.get(id);
+      const near = this.nearest(n.x, n.y, new Set([id]), 1);
+      if (near.length) this.edges.push({ a: near[0], b: id, born: now - N.GROW_TIME, bend: rand(-N.CURVE, N.CURVE) });
+    }
+  }
+
+  // after each Game of Life step: follow clusters, sprout nodes, extend chains
+  generation(layers, now) {
+    const newHeads = [];
+    layers.forEach((alive, c) => {
+      const old = this.heads.filter(h => h.color === c), used = old.map(() => false);
+      for (const [row, col, cells] of clusters(alive, this.cols, this.rows)) {
+        const r = this.dotRadius(cells);
+        let best = -1, bestD = N.MATCH_DIST;
+        old.forEach((h, j) => {
+          if (used[j]) return;
+          const d = Math.hypot(h.row - row, h.col - col);
+          if (d < bestD) { best = j; bestD = d; }
+        });
+        const [x, y] = this.toScreen(row, col);
+        if (best >= 0) {
+          used[best] = true;
+          const h = old[best], age = h.age + 1;
+          const node = h.node !== null ? this.nodes.get(h.node) : undefined;
+          let id;
+          if (!node) id = age >= N.SETTLE ? this.sprout(x, y, r, c, now) : null;
+          else if (Math.hypot(node.x - x, node.y - y) > N.CHAIN_SPACING * this.sx) {
+            id = this.addNode(x, y, r, c, now);             // travelling: extend the chain
+            this.addEdge(h.node, id, now);
+          } else { id = h.node; node.tr = r; node.seen = now; }
+          newHeads.push({ color: c, row, col, node: id, age });
+        } else newHeads.push({ color: c, row, col, node: null, age: 1 });
+      }
+    });
+    this.heads = newHeads;
+    this.retire(now);
+  }
+
+  // start fading old nodes; remove fully faded nodes together with all their lines
+  retire(now) {
+    const active = new Set(this.heads.filter(h => h.node !== null).map(h => h.node));
+    for (const [id, n] of this.nodes) {
+      if (active.has(id)) n.seen = now;
+      else if (n.fade === null && now - n.seen > N.NODE_LIFE) n.fade = now;
+    }
+    const visible = [...this.nodes].filter(([, n]) => n.fade === null).map(([id]) => id);
+    if (visible.length > N.MAX_NODES) {
+      visible.sort((a, b) => this.nodes.get(a).seen - this.nodes.get(b).seen);
+      for (const id of visible.slice(0, visible.length - N.MAX_NODES)) this.nodes.get(id).fade = now;
+    }
+    for (const [id, n] of [...this.nodes]) if (n.fade !== null && now - n.fade > N.FADE_TIME) this.nodes.delete(id);
+    this.edges = this.edges.filter(e => this.nodes.has(e.a) && this.nodes.has(e.b));
+    this.heads = this.heads.filter(h => h.node === null || this.nodes.has(h.node));
+  }
+
+  // --- drawing ---
+  alpha(n, now) { return n.fade === null ? 1 : Math.max(0, 1 - (now - n.fade) / N.FADE_TIME); }
+
+  // points along a gently bent line from a to b, from 0 up to `upto` (0-1)
+  curvePoints(a, b, bend, upto) {
+    const mx = (a.x + b.x) / 2 - (b.y - a.y) * bend, my = (a.y + b.y) / 2 + (b.x - a.x) * bend, pts = [];
+    for (let i = 0; i < 14; i++) {
+      const t = upto * i / 13, u = 1 - t;
+      pts.push([u*u*a.x + 2*u*t*mx + t*t*b.x, u*u*a.y + 2*u*t*my + t*t*b.y]);
+    }
+    return pts;
+  }
+
+  render(ctx, palette, now) {
+    // where every node is drawn: a node still being reached by its line sits at the line's tip
+    const drawPos = new Map([...this.nodes].map(([id, n]) => [id, [n.x, n.y]]));
+    const lines = [];
+    for (const e of this.edges) {
+      const a = this.nodes.get(e.a), b = this.nodes.get(e.b);
+      const grow = Math.min(1, (now - e.born) / N.GROW_TIME);
+      if (grow <= 0) continue;
+      const pts = this.curvePoints(a, b, e.bend, grow);
+      if (grow < 1 && b.born >= e.born - 1e-6) drawPos.set(e.b, pts[pts.length - 1]);   // the new node rides on the growing tip
+      const col = palette[b.color].map(v => Math.floor(v * N.LINE_DARKNESS));
+      lines.push([pts, col, Math.min(this.alpha(a, now), this.alpha(b, now))]);
+    }
+
+    // glows around nodes, at low resolution
+    const gw = this.gw, gh = this.gh, k = N.GLOW_RES / this.sx, used = new Array(S.numColors).fill(false);
+    for (const h of this.halos) h.fill(0);
+    for (const [id, n] of this.nodes) {
+      n.r += (n.tr - n.r) * 0.15;
+      const [x, y] = drawPos.get(id);
+      const R = Math.max(1, Math.floor(Math.max(n.r * N.HALO_SIZE, N.MIN_HALO * this.sx) * k));
+      const cx = Math.floor(x * k), cy = Math.floor(y * k), val = this.alpha(n, now), H = this.halos[n.color];
+      used[n.color] = true;
+      for (let dy = -R; dy <= R; dy++) {
+        const yy = cy + dy; if (yy < 0 || yy >= gh) continue;
+        const span = Math.floor(Math.sqrt(R * R - dy * dy));
+        for (let xx = Math.max(0, cx - span); xx <= Math.min(gw - 1, cx + span); xx++) H[yy * gw + xx] = val;
+      }
+    }
+    const A = this.A, C = this.C;
+    A.fill(0); C.fill(0);
+    const br = Math.max(1, Math.round(Math.sqrt(4 * (N.GLOW_SIZE * N.GLOW_RES) ** 2 + 1) / 2));
+    for (let i = 0; i < S.numColors; i++) {
+      if (!used[i]) continue;
+      const H = this.halos[i];
+      boxBlur(H, this.tmp, gw, gh, br);
+      const pr = palette[i][0] / 255, pg = palette[i][1] / 255, pb = palette[i][2] / 255;
+      for (let p = 0; p < A.length; p++) {
+        const a = Math.min(1, H[p] * N.GLOW_OPACITY);
+        if (a <= 0) continue;
+        const q = 1 - a;
+        C[p*3] = C[p*3] * q + pr * a; C[p*3+1] = C[p*3+1] * q + pg * a; C[p*3+2] = C[p*3+2] * q + pb * a;
+        A[p] = A[p] * q + a;
+      }
+    }
+    // scale the glows up to full size (smoothly), then add paper and grain
+    const lc = this.lowCimg.data, la = this.lowAimg.data;
+    for (let p = 0; p < A.length; p++) {
+      lc[p*4] = C[p*3] * 255; lc[p*4+1] = C[p*3+1] * 255; lc[p*4+2] = C[p*3+2] * 255; lc[p*4+3] = 255;
+      la[p*4] = A[p] * 255; la[p*4+3] = 255;
+    }
+    this.lowCx.putImageData(this.lowCimg, 0, 0); this.lowAx.putImageData(this.lowAimg, 0, 0);
+    for (const [dst, src] of [[this.fullCx, this.lowC], [this.fullAx, this.lowA]]) {
+      dst.imageSmoothingEnabled = true; dst.imageSmoothingQuality = "low";
+      dst.drawImage(src, 0, 0, this.W, this.H);
+    }
+    const fc = this.fullCx.getImageData(0, 0, this.W, this.H).data, fa = this.fullAx.getImageData(0, 0, this.W, this.H).data;
+    const g = this.grains[this.frameNo++ % this.grains.length], o = this.out.data;
+    const P0 = N.PAPER[0], P1 = N.PAPER[1], P2 = N.PAPER[2];
+    for (let p = 0, q = 0; p < g.length; p++, q += 4) {
+      const gr = g[p], a = Math.min(1, fa[q] / 255 * gr), keep = 1 - a;
+      o[q] = P0 * keep + fc[q] * gr; o[q+1] = P1 * keep + fc[q+1] * gr; o[q+2] = P2 * keep + fc[q+2] * gr; o[q+3] = 255;
+    }
+    ctx.putImageData(this.out, 0, 0);
+
+    // lines
+    ctx.lineWidth = 1; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (const [pts, col, alpha] of lines) {
+      if (alpha <= 0) continue;
+      ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${alpha * N.LINE_OPACITY})`;
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+    }
+    // nodes on top (fading nodes shrink away)
+    ctx.fillStyle = `rgb(${N.DOT})`;
+    for (const [id, n] of this.nodes) {
+      const r = n.r * this.alpha(n, now);
+      if (r <= 0.4) continue;
+      const [x, y] = drawPos.get(id);
+      ctx.beginPath(); ctx.arc(x, y, Math.max(1, r), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // camera preview: a node for every patch of colour, no lines
+  preview(ctx, layers, palette, now) {
+    this.reset();
+    layers.forEach((alive, c) => {
+      for (const [row, col, cells] of clusters(alive, this.cols, this.rows)) {
+        const [x, y] = this.toScreen(row, col);
+        const id = this.addNode(x, y, this.dotRadius(cells), c, now);
+        this.nodes.get(id).r = this.nodes.get(id).tr;
+      }
+    });
+    this.render(ctx, palette, now);
+  }
+}
+
+// ---------------- page ----------------
+const view = $("view"), vctx = view.getContext("2d");
+let mode = "camera", source = null, groups = null, palette = null, centers = null, w = 0, h = 0;
+let net = null, layers = null, lifePalette = null, lastStep = 0, gen = 0;
+
+function pixelate() {
+  const [cols, rows] = gridFor(S.cells);
+  const d = Cam.grab(cols, rows, S.mirror);
+  if (!d) return false;
+  if (cols !== w || rows !== h) centers = null;
+  const n = cols * rows, px = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { px[i*3] = d[i*4]; px[i*3+1] = d[i*4+1]; px[i*3+2] = d[i*4+2]; }
+  const res = findColors(px, n, S.numColors, centers);
+  centers = res.centers; groups = res.labels; w = cols; h = rows;
+  palette = vivid(centers, S.colorBoost, S.minSaturation, S.minBrightness);
+  return true;
+}
+function randomPicture() {
+  w = S.cells; h = Math.round(w * 0.75);
+  groups = randomLabels(w, h, S.numColors);
+  palette = vivid(RANDOM_CENTERS.map(c => c.slice()), S.colorBoost, S.minSaturation, S.minBrightness);
+}
+function splitLayers() {
+  const out = [];
+  for (let k = 0; k < S.numColors; k++) {
+    const a = new Uint8Array(w * h);
+    for (let i = 0; i < a.length; i++) a[i] = groups[i] === k ? 1 : 0;
+    out.push(a);
+  }
+  return out;
+}
+function ensureNet() {
+  if (!net || net.rows !== h || net.cols !== w) {
+    net = new Network(h, w);
+    view.width = net.W; view.height = net.H;
+    fitView(view, false);
+  }
+}
+
+function loop(t) {
+  const now = t / 1000;
+  if (mode === "camera") {
+    if (source === "camera") pixelate();
+    if (groups) { ensureNet(); net.preview(vctx, splitLayers(), palette, now); swatches(palette); }
+  } else {
+    if (t - lastStep >= 1000 / S.speed) {
+      layers = layers.map(a => lifeDead(a, w, h)); gen++; lastStep = t;
+      net.generation(layers, now);
+      $("status").textContent = `generation ${gen} · ${net.nodes.size} nodes`;
+    }
+    net.render(vctx, lifePalette, now);
+  }
+  requestAnimationFrame(loop);
+}
+
+function toggle() {
+  if (mode === "camera") {
+    if (!groups) return;
+    ensureNet();
+    layers = splitLayers();
+    lifePalette = palette.map(c => c.slice());
+    net.start(layers, performance.now() / 1000);
+    mode = "life"; gen = 0; lastStep = performance.now();
+    $("status").textContent = "generation 0"; $("status").style.display = "block";
+    $("btnMain").innerHTML = "Back to camera <kbd>Space</kbd>";
+  } else {
+    mode = "camera";
+    $("status").style.display = "none";
+    $("btnMain").innerHTML = "Freeze &amp; grow <kbd>Space</kbd>";
+  }
+}
+
+$("btnCam").onclick = async () => {
+  $("btnCam").disabled = true; showMsg("Waiting for the camera…");
+  if (await Cam.start()) { source = "camera"; $("btnCam").textContent = "Camera on"; $("btnMain").disabled = false; if (mode !== "camera") toggle(); }
+  else { $("btnCam").disabled = false; showMsg(CAM_FAIL); }
+};
+$("btnRandom").onclick = () => { source = "random"; if (mode !== "camera") toggle(); randomPicture(); $("btnMain").disabled = false; };
+$("btnMain").onclick = toggle;
+bindRange("setCells", "outCells", v => { S.cells = v; if (source === "random" && mode === "camera") randomPicture(); });
+bindRange("setSpeed", "outSpeed", v => { S.speed = v; });
+$("setMirror").onchange = e => { S.mirror = e.target.checked; };
+window.addEventListener("resize", () => { if (net) fitView(view, false); });
+document.addEventListener("keydown", e => {
+  if ((e.key === " " || e.key === "Enter") && groups) { e.preventDefault(); toggle(); }
+  else if (e.key === "Escape" && mode === "life") toggle();
+});
+requestAnimationFrame(loop);
+if (/[?&]demo\b/.test(location.search)) { $("btnRandom").click(); setTimeout(toggle, 100); }
+
+})();
+</script>
+</body>
+</html>
