@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Paper tube prototype</title>
+<style>
+:root{--bg:#eef0f3;--panel:#fff;--ink:#1d2330;--mute:#646c7c;--line:#d5d9e0;--acc:#3b6fe0;--rail:#b9c0cc;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171a21;--panel:#222731;--ink:#e8eaf0;--mute:#99a1b3;--line:#363d4b;--acc:#7ea2ff;--rail:#4a5263;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#171a21;--panel:#222731;--ink:#e8eaf0;--mute:#99a1b3;--line:#363d4b;--acc:#7ea2ff;--rail:#4a5263;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;max-width:980px;margin:0 auto}
+h1{font-size:19px;margin:4px 0 2px}
+p.sub{margin:0 0 12px;color:var(--mute);font-size:14px}
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+canvas{display:block;width:100%;touch-action:none;cursor:grab}
+.ctl{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.ctl label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute);min-width:160px;flex:1}
+.ctl input[type=range]{width:100%;accent-color:var(--acc)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-size:14px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:7px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--acc)}
+button:disabled{opacity:.45;cursor:default}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+</style>
+</head>
+<body>
+<h1>Paper tube prototype</h1>
+<p class="sub">Drag a tape ring (or a knob on the left rail) to slide the units in and out. All pipes move together. Drag empty space to rotate the view.</p>
+<div class="stage"><canvas id="c"></canvas></div>
+<div class="ctl">
+  <div class="btns"><button id="bph" class="on">Photonic state</button><button id="bel">Electronic state</button></div>
+  <label>Fold (pipe → flowers)<input id="fold" type="range" min="0" max="100" value="55"></label>
+  <label>Strips per unit: <span id="nv">8</span><input id="n" type="range" min="4" max="14" step="2" value="8"></label>
+  <div class="btns">
+    <button id="bp">Pipe</button><button id="bf">Flowers</button><button id="ba">Wave</button><button id="bl" class="on">LED</button><button id="bb" class="on">Breathe</button><button id="br">Reset view</button>
+  </div>
+</div>
+<script>
+const L=300,R0=30,DMIN=0.85*L,W=720,CW=10,SEG=12,ROD0=30,ROD1=690,RODR=R0-3.5,NG=2,BREATH=16;
+let N=8,yaw=0.55,pitch=0.4,anim=false,tA=0,led=true,tL=0,state='photonic',saved=null,ev=[],breathe=true,fp=1,fe=0,tfp=1,tfe=0,pend=null,tr=null;
+const gapFor=f=>L-f*(L-DMIN);
+const mkP=(d,c)=>Array.from({length:NG+1},(_,i)=>(c===undefined?W/2:c)+(i-NG/2)*d);
+let p=mkP(gapFor(0.55));
+
+/* buckled strip: clamped ends, arc length fixed = L */
+function amp(d){
+  if(d>=L-0.05)return 0;
+  const len=A=>{let s=0,n=24;for(let i=0;i<n;i++){const t=(i+.5)/n,sl=A*Math.PI/d*Math.sin(2*Math.PI*t);s+=Math.sqrt(1+sl*sl)*d/n}return s};
+  let lo=0,hi=L;
+  for(let i=0;i<22;i++){const m=(lo+hi)/2;len(m)<L?lo=m:hi=m}
+  return (lo+hi)/2;
+}
+const SP=2*(R0+amp(gapFor(0.45)));
+const touching=d=>amp(d)>=SP/2-R0-0.3;
+
+/* woven tower: layers of pipes alternate between x and z, crossing one above the other */
+const XO=gapFor(0.55)/2,TOP=5*SP,LVY=l=>SP*(l+1)-TOP/2;
+/* two staggered plates: lower one (levels 0-1) front-left, upper one (levels 2-3) back-right, overlapping in the middle */
+const GX=l=>l<2?-XO:XO,GZ=l=>l<2?XO:-XO;
+const PIPES=[];
+for(let l=0;l<4;l++)for(const sg of [-1,1]){
+  const xdir=l%2===0,y=LVY(l);
+  const e1=xdir?[1,0,0]:[0,0,1],e2=[0,1,0],e3=xdir?[0,0,1]:[-1,0,0];
+  PIPES.push({c:xdir?[GX(l),y,GZ(l)+sg*XO]:[GX(l)+sg*XO,y,GZ(l)],e1,e2,e3,l,sg,xdir,idx:PIPES.length,rev:(l+(sg>0?1:0))%2===1});
+}
+/* where a pipe crosses the pipe in the layer above: strip pointing up touches strip pointing down */
+const CONTACTS=[],CL=new Set();
+for(const A of PIPES)for(const B of PIPES){
+  if(B.l!==A.l+1)continue;
+  const xp=A.xdir?A:B,zp=A.xdir?B:A;
+  const dx=zp.c[0]-xp.c[0],dz=xp.c[2]-zp.c[2];
+  if(Math.abs(Math.abs(dx)-XO)>1||Math.abs(Math.abs(dz)-XO)>1)continue;
+  const gx=dx<0?0:1,gz=dz<0?0:1;
+  const c={A:A.idx,B:B.idx,gA:A.xdir?gx:gz,gB:B.xdir?gx:gz};
+  CONTACTS.push(c);CL.add(c.A+':'+c.gA+':U');CL.add(c.B+':'+c.gB+':D');
+}
+const cTouch=(E,q)=>Math.min(amp(q[E.gA+1]-q[E.gA]),amp(q[E.gB+1]-q[E.gB]))>=SP/2-R0-0.3;
+/* direction the light runs along each pipe */
+const ringRho=(F,u)=>F.rev?1-u:u;
+
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const foldEl=document.getElementById('fold');
+let S=1,cssW=0,cssH=0,hover=-1,active=-1,hitDir=[0,1],curF=null;
+function resize(){
+  const r=cv.parentElement.getBoundingClientRect();
+  cssW=r.width;cssH=Math.round(Math.max(430,Math.min(720,cssW*0.72)));
+  const dpr=window.devicePixelRatio||1;
+  cv.width=cssW*dpr;cv.height=cssH*dpr;cv.style.height=cssH+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  S=Math.min(cssW/1150,cssH/(TOP+140));
+}
+addEventListener('resize',resize);resize();
+
+function rot(x,y,z){
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+  const x1=x*cy+z*sy,z1=-x*sy+z*cy;
+  return [x1,y*cp-z1*sp,y*sp+z1*cp];
+}
+function wp(X,Y,Z){const r=rot(X,Y,Z),f=1/(1-r[2]/3000);return [cssW/2+r[0]*S*f,cssH*0.52-r[1]*S*f,r[2]]}
+function proj(a,u,v,F){
+  const s=a-W/2;
+  return wp(F.c[0]+F.e1[0]*s+F.e2[0]*u+F.e3[0]*v,F.c[1]+F.e1[1]*s+F.e2[1]*u+F.e3[1]*v,F.c[2]+F.e1[2]*s+F.e2[2]*u+F.e3[2]*v);
+}
+function axisDir(F,a){const A=proj(a,0,0,F),B=proj(a+20,0,0,F);return [(B[0]-A[0])/20,(B[1]-A[1])/20]}
+
+function setCollar(i,x){
+  const q=p.slice();q[i]=x;
+  const cl=v=>Math.min(L,Math.max(DMIN,v));
+  for(let j=i+1;j<=NG;j++)q[j]=q[j-1]+cl(q[j]-q[j-1]);
+  for(let j=i-1;j>=0;j--)q[j]=q[j+1]-cl(q[j+1]-q[j]);
+  if(q[0]<ROD0+10||q[NG]>ROD1-10)return;
+  p=q;
+}
+function setEqual(d){
+  let c=(p[0]+p[NG])/2;c=Math.min(Math.max(c,NG*d/2+ROD0+10),ROD1-NG*d/2-10);
+  p=mkP(d,c);
+}
+/* displayed positions: gentle breathing wave on top of the set positions */
+function disp(){
+  if(state!=='photonic'||!breathe||tr||pend||fp<0.001)return p;
+  const g=Array.from({length:NG},(_,i)=>Math.min(L,Math.max(DMIN,p[i+1]-p[i]+BREATH*fp*Math.sin(tL*1.4-i*0.9))));
+  const sum=g.reduce((a,b)=>a+b,0);
+  let c=(p[0]+p[NG])/2;c=Math.min(Math.max(c,sum/2+ROD0+10),ROD1-10-sum/2);
+  const q=[c-sum/2];for(let i=0;i<NG;i++)q.push(q[i]+g[i]);
+  return q;
+}
+
+function rodFill(v,x,F){
+  let r=150*v,g=158*v,b=176*v;
+  if(fe>0.001){
+    const u=(x-ROD0)/(ROD1-ROD0),I=Math.pow(Math.max(0,Math.cos(6.2832*(ringRho(F,u)-tL*0.12-F.l*0.1))),6)*fe,y=0.75+0.25*v;
+    r+=(255*y-r)*I;g+=(214*y-g)*I;b+=(60*y-b)*I;
+  }
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+function hsl2rgb(h,s,l){const a=s*Math.min(l,1-l),f=n=>{const k=(n+h/30)%12;return l-a*Math.max(-1,Math.min(k-3,9-k,1))};return [255*f(0),255*f(8),255*f(4)]}
+
+const RAILX=26,railY=a=>cssH*0.14+(a-ROD0)/(ROD1-ROD0)*cssH*0.72;
+
+function render(){const pb=p;p=disp();try{renderCore()}finally{p=pb}}
+function renderCore(){
+  const css=getComputedStyle(document.documentElement);
+  const mute=css.getPropertyValue('--mute').trim(),acc=css.getPropertyValue('--acc').trim(),rail=css.getPropertyValue('--rail').trim();
+  ctx.clearRect(0,0,cssW,cssH);
+  const quads=[],light=[0.3,0.6,0.7];
+  const shade=(nx,ny,nz)=>{
+    const F=curF||PIPES[0];
+    const r=rot(F.e2[0]*nx-F.e1[0]*ny+F.e3[0]*nz,F.e2[1]*nx-F.e1[1]*ny+F.e3[1]*nz,F.e2[2]*nx-F.e1[2]*ny+F.e3[2]*nz),m=Math.hypot(r[0],r[1],r[2])||1;
+    return Math.abs((r[0]*light[0]+r[1]*light[1]+r[2]*light[2])/m);
+  };
+  const hw=Math.min(R0*Math.PI/N*0.8,26);
+  const LC=[];for(let k=0;k<N;k++)LC.push(hsl2rgb(360*k/N,0.9,0.55));
+  const AN=16,RN=8,RS=36;
+  for(const F of PIPES){
+    curF=F;
+    for(let g=0;g<NG;g++){
+      const d=p[g+1]-p[g],A=amp(d);
+      for(let k=0;k<N;k++){
+        const th=2*Math.PI*k/N,c=Math.cos(th),s=Math.sin(th);
+        const dk=k===0?'U':(k===N/2?'D':''),clampK=dk&&CL.has(F.idx+':'+g+':'+dk);
+        const pt=(t,side)=>{
+          let rr=R0+A*(1-Math.cos(2*Math.PI*t))/2;
+          if(clampK)rr=Math.min(rr,SP/2);
+          return proj(p[g]+t*d,rr*c-side*hw*s,rr*s+side*hw*c,F);
+        };
+        for(let i=0;i<SEG;i++){
+          const t0=i/SEG,t1=(i+1)/SEG,tm=(t0+t1)/2;
+          const slope=A*Math.PI/d*Math.sin(2*Math.PI*tm);
+          const sh=shade(c,slope,s),v=Math.round(196+58*sh);
+          const a=pt(t0,-1),b=pt(t0,1),e=pt(t1,1),f=pt(t1,-1);
+          let fill=`rgb(${v},${v},${Math.min(255,v+4)})`,stroke='rgba(60,70,95,.28)';
+          const rho=ringRho(F,(p[g]+tm*d-ROD0)/(ROD1-ROD0));
+          if(fe>0.001){
+            const I=Math.pow(Math.max(0,Math.cos(6.2832*(rho-tL*0.12-F.l*0.1))),6),m=I*0.55*fe;
+            fill=`rgb(${Math.round(v+(255-v)*m)},${Math.round(v+(214-v)*m)},${Math.round(v+(70-v)*m)})`;
+          }else if(led&&fp>0.001){
+            const I=Math.pow(Math.max(0,Math.cos(6.2832*(rho-tL*0.12-k*0.09-F.idx*0.13))),3),lc=LC[(k+F.idx*3)%N],m=I*0.92*fp;
+            fill=`rgb(${Math.round(v+(lc[0]-v)*m)},${Math.round(v+(lc[1]-v)*m)},${Math.round(v+(lc[2]-v)*m)})`;
+            if(I*fp>0.3)stroke=`rgba(${Math.round(lc[0])},${Math.round(lc[1])},${Math.round(lc[2])},.6)`;
+          }
+          if(fp>0.001&&led&&ev.length){
+            let best=0,bc=null;
+            for(const E of ev){
+              const ph1=E.t<0.6,tt=ph1?E.t/0.6:(E.t-0.6)/0.6;
+              const onA=F.idx===E.A&&g===E.gA&&k===0,onB=F.idx===E.B&&g===E.gB&&k===N/2;
+              if(!onA&&!onB)continue;
+              if(!ph1&&!cTouch(E,p))continue;
+              const tc=ph1?(E.e?1-0.5*tt:0.5*tt):(E.e?0.5-0.5*tt:0.5+0.5*tt);
+              const I2=Math.exp(-Math.pow((tm-tc)/0.1,2));
+              if(I2>best){best=I2;bc=LC[(onA===ph1)?E.cA:E.cB]}
+            }
+            if(bc&&best>0.02){
+              const m=Math.min(1,best*1.15*fp);
+              fill=`rgb(${Math.round(v+(bc[0]-v)*m)},${Math.round(v+(bc[1]-v)*m)},${Math.round(v+(bc[2]-v)*m)})`;
+              if(best>0.3)stroke=`rgba(${Math.round(bc[0])},${Math.round(bc[1])},${Math.round(bc[2])},.7)`;
+            }
+          }
+          quads.push({pts:[a,b,e,f],z:(a[2]+b[2]+e[2]+f[2])/4,fill,stroke});
+        }
+      }
+    }
+    for(let i=0;i<=NG;i++){
+      const r=R0+2.5,on=(i===active||i===hover);
+      for(let j=0;j<AN;j++){
+        const a0=2*Math.PI*j/AN,a1=2*Math.PI*(j+1)/AN,am=(a0+a1)/2;
+        const P=(x,a)=>proj(p[i]+x,r*Math.cos(a),r*Math.sin(a),F);
+        const q=[P(-CW/2,a0),P(CW/2,a0),P(CW/2,a1),P(-CW/2,a1)];
+        const v=0.8+0.2*shade(Math.cos(am),0,Math.sin(am));
+        const col=on?[120,160,245]:[232,219,186];
+        quads.push({pts:q,z:(q[0][2]+q[1][2]+q[2][2]+q[3][2])/4+0.5,fill:`rgb(${Math.round(col[0]*v)},${Math.round(col[1]*v)},${Math.round(col[2]*v)})`,stroke:'rgba(80,70,40,.25)'});
+      }
+    }
+    for(let j=0;j<RS;j++){
+      const x0=ROD0+(ROD1-ROD0)*j/RS,x1=ROD0+(ROD1-ROD0)*(j+1)/RS;
+      for(let k=0;k<RN;k++){
+        const a0=2*Math.PI*k/RN,a1=2*Math.PI*(k+1)/RN,am=(a0+a1)/2;
+        const c0=RODR*Math.cos(a0),s0=RODR*Math.sin(a0),c1=RODR*Math.cos(a1),s1=RODR*Math.sin(a1);
+        const q=[proj(x0,c0,s0,F),proj(x1,c0,s0,F),proj(x1,c1,s1,F),proj(x0,c1,s1,F)];
+        const v=0.72+0.28*shade(Math.cos(am),0,Math.sin(am));
+        quads.push({pts:q,z:(q[0][2]+q[1][2]+q[2][2]+q[3][2])/4-16,fill:rodFill(v,(x0+x1)/2,F),stroke:'rgba(40,50,70,.3)'});
+      }
+    }
+  }
+  /* frame: ridge beam, base rails, end triangles */
+  const addLine=(A,B,w)=>{
+    const n=Math.max(1,Math.ceil(Math.hypot(B[0]-A[0],B[1]-A[1],B[2]-A[2])/60));
+    for(let i=0;i<n;i++){
+      const t0=i/n,t1=(i+1)/n;
+      const P0=wp(A[0]+(B[0]-A[0])*t0,A[1]+(B[1]-A[1])*t0,A[2]+(B[2]-A[2])*t0),P1=wp(A[0]+(B[0]-A[0])*t1,A[1]+(B[1]-A[1])*t1,A[2]+(B[2]-A[2])*t1);
+      quads.push({line:true,pts:[P0,P1],w:w*S,z:(P0[2]+P1[2])/2-20,col:acc});
+    }
+  };
+  const FY=-TOP/2,PX=345;
+  /* poles stand at the back corners of each plate, on round feet */
+  const poles=[];
+  for(const sx of [-1,1]){poles.push([GX(0)+sx*PX,GZ(0)-PX,LVY(1)+50]);poles.push([GX(2)+sx*PX,GZ(2)-PX,LVY(3)+50])}
+  for(const [px,pz,top] of poles){
+    addLine([px,FY,pz],[px,top,pz],8);
+    const FR=48,FN=18;
+    for(let i=0;i<FN;i++){
+      const a0=2*Math.PI*i/FN,a1=2*Math.PI*(i+1)/FN;
+      const q=[wp(px,FY,pz),wp(px+FR*Math.cos(a0),FY,pz+FR*Math.sin(a0)),wp(px+FR*Math.cos(a1),FY,pz+FR*Math.sin(a1))];
+      quads.push({pts:q,z:(q[0][2]+q[1][2]+q[2][2])/3-30,fill:'rgb(70,76,90)',stroke:'rgba(20,24,34,.6)'});
+    }
+  }
+  for(let l=0;l<4;l++){
+    const y=LVY(l),x0=GX(l),z0=GZ(l);
+    addLine([x0-PX,y,z0-PX],[x0+PX,y,z0-PX],4);addLine([x0+PX,y,z0-PX],[x0+PX,y,z0+PX],4);addLine([x0+PX,y,z0+PX],[x0-PX,y,z0+PX],4);addLine([x0-PX,y,z0+PX],[x0-PX,y,z0-PX],4);
+  }
+  quads.sort((u,w)=>u.z-w.z);
+  const person=(x,z)=>{
+    const f=wp(x,-TOP/2,z),t=wp(x,-TOP/2+TOP*0.72,z),h=f[1]-t[1];if(h<10)return;const hr=h*0.065;
+    ctx.strokeStyle=acc;ctx.lineWidth=2.2;ctx.lineJoin='round';ctx.beginPath();ctx.arc(f[0],t[1]+hr,hr,0,7);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(f[0]-h*0.2,f[1]);ctx.bezierCurveTo(f[0]-h*0.2,t[1]+h*0.3,f[0]-h*0.1,t[1]+h*0.16,f[0],t[1]+h*0.16);ctx.bezierCurveTo(f[0]+h*0.1,t[1]+h*0.16,f[0]+h*0.2,t[1]+h*0.3,f[0]+h*0.2,f[1]);ctx.stroke();
+  };
+  ctx.lineWidth=0.6;ctx.lineJoin='round';
+  for(const q of quads){
+    ctx.beginPath();ctx.moveTo(q.pts[0][0],q.pts[0][1]);
+    for(let i=1;i<q.pts.length;i++)ctx.lineTo(q.pts[i][0],q.pts[i][1]);
+    if(q.line){ctx.lineWidth=q.w;ctx.lineCap='round';ctx.strokeStyle=q.col;ctx.stroke();ctx.lineWidth=0.6}
+    else{ctx.closePath();ctx.fillStyle=q.fill;ctx.fill();ctx.strokeStyle=q.stroke;ctx.stroke()}
+  }
+  /* flash where light jumps between touching strips */
+  for(const E of ev){
+    if(E.t<0.5||E.t>0.95)continue;
+    if(!cTouch(E,p))continue;
+    const d=p[E.gA+1]-p[E.gA],al=fp*Math.min(1,(E.t-0.5)/0.1)*(1-Math.min(1,(E.t-0.6)/0.35));
+    const pt=proj(p[E.gA]+d/2,SP/2,0,PIPES[E.A]),lc=LC[E.cA],rr=22*S;
+    const gr=ctx.createRadialGradient(pt[0],pt[1],0,pt[0],pt[1],rr);
+    gr.addColorStop(0,`rgba(255,255,255,${0.9*al})`);
+    gr.addColorStop(0.35,`rgba(${Math.round(lc[0])},${Math.round(lc[1])},${Math.round(lc[2])},${0.6*al})`);
+    gr.addColorStop(1,`rgba(${Math.round(lc[0])},${Math.round(lc[1])},${Math.round(lc[2])},0)`);
+    ctx.fillStyle=gr;ctx.beginPath();ctx.arc(pt[0],pt[1],rr,0,7);ctx.fill();
+  }
+  /* vertical rail with knobs */
+  const ky=p.map(x=>railY(x));
+  ctx.strokeStyle=rail;ctx.lineWidth=3;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(RAILX,ky[0]);ctx.lineTo(RAILX,ky[NG]);ctx.stroke();
+  ctx.font='12px system-ui,sans-serif';ctx.textAlign='left';ctx.fillStyle=mute;
+  for(let g=0;g<NG;g++){
+    const f=(L-(p[g+1]-p[g]))/(L-DMIN);
+    ctx.fillText(Math.round(f*100)+'%',RAILX+16,(ky[g]+ky[g+1])/2+4);
+  }
+  ctx.textAlign='center';
+  for(let i=0;i<=NG;i++){
+    const on=(i===active||i===hover);
+    ctx.beginPath();ctx.arc(RAILX,ky[i],11,0,7);
+    ctx.fillStyle=on?acc:'#fff';ctx.fill();ctx.lineWidth=2;ctx.strokeStyle=on?acc:rail;ctx.stroke();
+    ctx.fillStyle=on?'#fff':'#555d6e';ctx.font='11px system-ui,sans-serif';ctx.textBaseline='middle';
+    ctx.fillText('▴▾',RAILX,ky[i]+0.5);ctx.textBaseline='alphabetic';
+  }
+}
+
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(0.05,(now-last)/1000);last=now;tL=now/1000;
+  fp+=Math.max(-dt/0.7,Math.min(dt/0.7,tfp-fp));fe+=Math.max(-dt/0.6,Math.min(dt/0.6,tfe-fe));
+  if(pend&&pend.wait()){const r=pend.run;pend=null;r()}
+  if(tr){
+    tr.t+=dt;
+    const fg=i=>tr.from[i+1]-tr.from[i],tg=i=>tr.to[i+1]-tr.to[i];
+    const sm=x=>{x=Math.min(1,Math.max(0,x));return x*x*(3-2*x)};
+    const s=Array.from({length:NG},(_,g)=>sm((tr.t-g*0.55)/0.9));
+    const q=[tr.from[0]+(tr.to[0]-tr.from[0])*s[0]];
+    for(let g=0;g<NG;g++)q.push(q[g]+fg(g)+(tg(g)-fg(g))*s[g]);
+    p=q;
+    if(tr.t>(NG-1)*0.55+0.9){p=tr.to;tr=null;if(state==='electronic')tfe=1;else tfp=1}
+  }
+  for(const E of ev)E.t+=dt;
+  ev=ev.filter(E=>E.t<1.3);
+  if(state==='photonic'&&fp>0.9&&led&&!tr&&!pend&&N%2===0&&ev.length<14&&Math.random()<dt*3){
+    const q=disp(),cand=CONTACTS.filter(c=>cTouch(c,q));
+    if(cand.length){
+      const C=cand[Math.floor(Math.random()*cand.length)];
+      ev.push({A:C.A,B:C.B,gA:C.gA,gB:C.gB,e:Math.random()<0.5?0:1,cA:(C.A*3)%N,cB:(N/2+C.B*3)%N,t:0});
+    }
+  }
+  if(anim){
+    tA+=dt*1.3;
+    const g=Array.from({length:NG},(_,i)=>gapFor((1-Math.cos(tA-i*0.9))/2*0.9));
+    const sum=g.reduce((a,b)=>a+b,0);
+    p=[W/2-sum/2];for(let i=0;i<NG;i++)p.push(p[i]+g[i]);
+  }
+  if(document.activeElement!==foldEl){
+    const mean=(p[NG]-p[0])/NG;foldEl.value=Math.round((L-mean)/(L-DMIN)*100);
+  }
+  render();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* interaction */
+function hit(mx,my){
+  const p=disp();
+  let best=-1,bd=1e9;
+  for(let i=0;i<=NG;i++){
+    const ky=railY(p[i]);
+    const dk=Math.hypot(RAILX-mx,ky-my);
+    if(dk<20&&dk<bd){best=i;bd=dk;hitDir=[0,(cssH*0.72)/(ROD1-ROD0)]}
+    for(const F of PIPES){
+      const c=proj(p[i],0,0,F);
+      const dd=Math.hypot(c[0]-mx,c[1]-my);
+      if(dd<R0*S+8&&dd<bd){best=i;bd=dd;hitDir=axisDir(F,p[i])}
+    }
+  }
+  return best;
+}
+let mode=null,lx=0,ly=0;
+const pos=e=>{const r=cv.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top]};
+cv.addEventListener('pointerdown',e=>{
+  const [mx,my]=pos(e);cv.setPointerCapture(e.pointerId);
+  anim=false;document.getElementById('ba').classList.remove('on');
+  const h=hit(mx,my);lx=mx;ly=my;
+  if(h>=0&&state==='photonic'&&!tr&&!pend&&fp>0.9){mode='collar';active=h}else{mode='rotate';cv.style.cursor='grabbing'}
+});
+cv.addEventListener('pointermove',e=>{
+  const [mx,my]=pos(e);
+  if(mode==='collar'){
+    const dd2=hitDir[0]*hitDir[0]+hitDir[1]*hitDir[1],dv=dd2>1e-4?((mx-lx)*hitDir[0]+(my-ly)*hitDir[1])/dd2:0;
+    setCollar(active,p[active]+dv);lx=mx;ly=my;
+  }else if(mode==='rotate'){
+    yaw+=(mx-lx)*0.008;
+    pitch=Math.max(0,Math.min(1.1,pitch+(my-ly)*0.006));lx=mx;ly=my;
+  }else{
+    hover=state==='photonic'?hit(mx,my):-1;cv.style.cursor=hover>=0?'pointer':'grab';
+  }
+});
+const end=()=>{mode=null;active=-1;cv.style.cursor='grab'};
+cv.addEventListener('pointerup',end);cv.addEventListener('pointercancel',end);
+cv.addEventListener('pointerleave',()=>{hover=-1});
+
+const baEl=document.getElementById('ba');
+const stopAnim=()=>{anim=false;baEl.classList.remove('on')};
+foldEl.addEventListener('input',()=>{stopAnim();setEqual(gapFor(foldEl.value/100))});
+document.getElementById('n').addEventListener('input',e=>{N=+e.target.value;document.getElementById('nv').textContent=N});
+const setFold=f=>{stopAnim();setEqual(gapFor(f))};
+document.getElementById('bp').onclick=()=>setFold(0);
+document.getElementById('bf').onclick=()=>setFold(1);
+baEl.onclick=e=>{anim=!anim;e.target.classList.toggle('on',anim)};
+document.getElementById('bl').onclick=e=>{led=!led;e.target.classList.toggle('on',led)};
+document.getElementById('bb').onclick=e=>{breathe=!breathe;e.target.classList.toggle('on',breathe)};
+document.getElementById('br').onclick=()=>{yaw=0.55;pitch=0.4};
+
+function startTr(to){tr={t:0,from:p.slice(),to}}
+function setState(s){
+  if(s===state)return;tr=null;
+  stopAnim();
+  if(s==='electronic'){
+    saved=p.slice();
+    const c=Math.min(Math.max((p[0]+p[NG])/2,ROD0+10+NG*L/2),ROD1-10-NG*L/2);
+    const tgtp=mkP(L,c);tfp=0;tfe=0;pend={wait:()=>fp<=0.001,run:()=>startTr(tgtp)};
+  }else{
+    const tgtp=saved||mkP(gapFor(0.55));tfe=0;tfp=0;pend={wait:()=>fe<=0.001,run:()=>startTr(tgtp)};
+  }
+  state=s;
+  document.getElementById('bph').classList.toggle('on',s==='photonic');
+  document.getElementById('bel').classList.toggle('on',s==='electronic');
+  ['fold','bp','bf','ba','bl','bb'].forEach(id=>document.getElementById(id).disabled=(s==='electronic'));
+}
+document.getElementById('bph').onclick=()=>setState('photonic');
+document.getElementById('bel').onclick=()=>setState('electronic');
+</script>
+</body>
+</html>
