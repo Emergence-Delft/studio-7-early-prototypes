@@ -39,20 +39,38 @@
   window.addEventListener("keyup", function (e) { if (locked) e.stopImmediatePropagation(); }, true);
   var st = document.createElement("style");
   st.textContent =
+    "@font-face{font-family:S7OpenSansLight;src:url(/studio-7-early-prototypes/assets/fonts/OpenSans-Light-webfont.woff) format('woff')}" +
+    "@font-face{font-family:S7OpenSansRegular;src:url(/studio-7-early-prototypes/assets/fonts/OpenSans-Regular-webfont.woff) format('woff')}" +
+    "@font-face{font-family:S7OpenSansSemibold;src:url(/studio-7-early-prototypes/assets/fonts/OpenSans-Semibold-webfont.woff) format('woff')}" +
     "html.pw-locked,html.pw-locked body{overflow:hidden!important}" +
     "#pwgate{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;" +
-    "background:#101014;color:#eef0f8;font:15px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}" +
-    "#pwgate form{display:flex;flex-direction:column;gap:12px;width:min(320px,86vw);text-align:center}" +
-    "#pwgate h2{margin:0;font-size:20px}#pwgate p{margin:0;color:#a9acc4;font-size:13px}" +
-    "#pwgate input{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #2c2d3d;background:#1b1c28;color:#eef0f8}" +
-    "#pwgate button{font:inherit;font-weight:600;padding:10px;border-radius:8px;border:0;background:#ff5a8a;color:#14040a;cursor:pointer}" +
-    "#pwgate .err{color:#ff8fa8;min-height:1.2em}";
+    "background:#252525;background:linear-gradient(#2a2a29,#1c1c1c);color:#f0e7d5;" +
+    "font:14px/1.5 S7OpenSansRegular,'Helvetica Neue',Helvetica,Arial,sans-serif}" +
+    "#pwgate .bar{position:absolute;top:0;left:0;right:0;height:60px;background:#353535;border-bottom:4px solid #434343;" +
+    "box-shadow:0 1px 3px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center}" +
+    "#pwgate .bar a{color:#fff;font:14px S7OpenSansSemibold,'Helvetica Neue',Helvetica,Arial,sans-serif;text-decoration:none;" +
+    "padding:6px 14px;border:1px solid #5d910b;border-radius:2px;background:#93bd20;background:linear-gradient(#93bd20,#659e10);" +
+    "box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 3px 7px rgba(0,0,0,.7);text-shadow:0 1px 0 rgba(0,0,0,.2)}" +
+    "#pwgate form{display:flex;flex-direction:column;gap:14px;width:min(340px,86vw);text-align:center;margin-top:30px}" +
+    "#pwgate h2{margin:0;color:#e8e8e8;font:normal 36px/1.1 S7OpenSansLight,'Helvetica Neue',Helvetica,Arial,sans-serif}" +
+    "#pwgate p{margin:0;color:#d7cfbe;font:16px S7OpenSansLight,'Helvetica Neue',Helvetica,Arial,sans-serif}" +
+    "#pwgate input{font:inherit;font-size:15px;padding:10px 12px;border-radius:2px;border:1px solid #121212;background:#191919;" +
+    "color:#efefef;box-shadow:inset 0 1px 3px rgba(0,0,0,.3);outline:none}" +
+    "#pwgate input:focus{border-color:#ffcc00}" +
+    "#pwgate button{font:15px S7OpenSansSemibold,'Helvetica Neue',Helvetica,Arial,sans-serif;color:#fff;padding:10px;cursor:pointer;" +
+    "border:1px solid #5d910b;border-radius:2px;background:#93bd20;background:linear-gradient(#93bd20,#659e10);" +
+    "box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 3px 7px rgba(0,0,0,.7);text-shadow:0 1px 0 rgba(0,0,0,.2)}" +
+    "#pwgate button:hover,#pwgate .bar a:hover{background:#659e10;background:linear-gradient(#749619,#527f0e);border-color:#527f0e;" +
+    "box-shadow:inset 0 1px 1px rgba(0,0,0,.2)}" +
+    "#pwgate .err{color:#ffcc00;min-height:1.2em;font-size:13px}";
   (document.head || root).appendChild(st);
   root.classList.add("pw-locked");
   function show() {
     var g = document.createElement("div");
     g.id = "pwgate";
-    g.innerHTML = '<form autocomplete="off"><h2>Studio 7 prototypes</h2><p>Enter the password to continue.</p>' +
+    var home = /github\.io$/.test(location.hostname) ? '<a href="/studio-7-early-prototypes/">All prototypes</a>' : '';
+    g.innerHTML = '<div class="bar">' + home + '</div>' +
+      '<form autocomplete="off"><h2>Studio 7 prototypes</h2><p>Enter the password to continue.</p>' +
       '<input type="password" aria-label="Password" placeholder="Password" autofocus>' +
       '<button type="submit">Open</button><p class="err" aria-live="polite"></p></form>';
     document.body.appendChild(g);
